@@ -56,45 +56,75 @@ def _session_hour_from_ts(ts: str) -> int:
     return dt.hour
 
 
-def cmd_open(args) -> int:
-    db = init_schema(args.db)
-    entry_ts = _parse_ts(args.entry_ts)
-    side = args.side.lower()
+def open_trade(db: str, symbol: str, side: str, entry: float, sl: float, tp: float,
+               setup: str = "willy_signal", regime: str = "",
+               entry_ts: str | None = None) -> dict:
+    """Open a trade row programmatically. Returns the inserted row as dict
+    with 'id'. Used by the CLI and by tv_webhook.py."""
+    side = side.lower()
     if side not in ("long", "short"):
-        raise SystemExit("--side must be long or short")
-
-    # Compute expected pnl_pct at TP (for reference, caller updates on close)
+        raise ValueError("side must be long or short")
+    entry_ts = _parse_ts(entry_ts)
     row = {
-        "symbol": args.symbol.upper(),
+        "symbol": symbol.upper(),
         "side": side,
-        "entry_price": args.entry,
-        "sl": args.sl,
-        "tp": args.tp,
+        "entry_price": entry,
+        "sl": sl,
+        "tp": tp,
         "entry_ts": entry_ts,
-        "setup_reason": args.setup,
-        "regime": args.regime,
+        "setup_reason": setup,
+        "regime": regime,
         "session_hour": _session_hour_from_ts(entry_ts),
     }
+    init_schema(db)
     cols = ", ".join(row.keys())
     placeholders = ", ".join(["?"] * len(row))
     with sqlite3.connect(db) as conn:
         cur = conn.execute(f"INSERT INTO trades ({cols}) VALUES ({placeholders})",
                            tuple(row.values()))
         conn.commit()
-        new_id = cur.lastrowid
+        row["id"] = cur.lastrowid
+    return row
+
+
+def cmd_open(args) -> int:
+    try:
+        row = open_trade(db=args.db, symbol=args.symbol, side=args.side,
+                         entry=args.entry, sl=args.sl, tp=args.tp,
+                         setup=args.setup, regime=args.regime,
+                         entry_ts=args.entry_ts)
+    except ValueError as e:
+        raise SystemExit(str(e))
 
     if args.format == "json":
-        print(json.dumps({"id": new_id, **row}, indent=2))
+        print(json.dumps(row, indent=2))
     else:
         risk_pct = abs(row["entry_price"] - row["sl"]) / row["entry_price"] * 100
         reward_pct = abs(row["tp"] - row["entry_price"]) / row["entry_price"] * 100
         rr = reward_pct / risk_pct if risk_pct > 0 else 0
-        print(f"✓ opened trade #{new_id}: {row['symbol']} {side} @ {row['entry_price']}  "
+        print(f"✓ opened trade #{row['id']}: {row['symbol']} {row['side']} @ {row['entry_price']}  "
               f"SL {row['sl']} ({risk_pct:.2f}%)  TP {row['tp']} ({reward_pct:.2f}%)  "
               f"R:R 1:{rr:.2f}")
-        print(f"  setup: {args.setup}  regime: {args.regime}  ts: {entry_ts}")
+        print(f"  setup: {args.setup}  regime: {args.regime}  ts: {row['entry_ts']}")
         print(f"  → close with:  python3 -m propfirm_engine.log_tv_trade close "
-              f"--id {new_id} --exit <PRICE> --reason <tp|sl|trail|regime_flip|manual>")
+              f"--id {row['id']} --exit <PRICE> --reason <tp|sl|atr_trail|regime_flip|manual>")
+    return 0
+
+
+def cmd_cancel(args) -> int:
+    """Delete an open trade row that was never actually executed on TV
+    (webhook fired but user chose not to enter). Refuses to delete closed
+    trades to protect the audit trail."""
+    with connect(args.db) as conn:
+        row = conn.execute("SELECT * FROM trades WHERE id = ?", (args.id,)).fetchone()
+        if row is None:
+            raise SystemExit(f"no trade with id={args.id}")
+        if row["exit_ts"] is not None:
+            raise SystemExit(f"trade #{args.id} is already closed ({row['exit_reason']}); "
+                             "use a compensating entry if you need to reverse it")
+        conn.execute("DELETE FROM trades WHERE id = ?", (args.id,))
+        conn.commit()
+    print(f"✓ cancelled open trade #{args.id}: {row['symbol']} {row['side']} @ {row['entry_price']}")
     return 0
 
 
@@ -188,6 +218,9 @@ def main() -> int:
 
     sub.add_parser("list-open", help="list trades with no exit_ts")
 
+    cn = sub.add_parser("cancel", help="delete an open trade row (never executed)")
+    cn.add_argument("--id", type=int, required=True)
+
     args = p.parse_args()
     if args.cmd == "open":
         return cmd_open(args)
@@ -195,6 +228,8 @@ def main() -> int:
         return cmd_close(args)
     if args.cmd == "list-open":
         return cmd_list_open(args)
+    if args.cmd == "cancel":
+        return cmd_cancel(args)
     return 1
 
 
