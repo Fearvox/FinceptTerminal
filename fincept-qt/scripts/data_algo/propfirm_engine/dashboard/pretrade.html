@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Propfirm v4 — Pre-Trade Checklist</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ─── DASH tokens (lifted from design-infra/packages/tokens/build/tokens.css) ── */
+:root {
+  --color-bg:          #10291f;
+  --color-bg-deep:     #0a0f0d;
+  --color-bg-card:     #142e24;
+  --color-paper-warm:  #ddd6c7;
+  --color-neon-gold:   #f0ee9b;
+  --color-leaf:        #7ed29a;
+  --color-danger:      oklch(0.62 0.20 25);
+  --color-sun-gold:    oklch(0.82 0.12 85);
+  --color-mid-green:   #35584c;
+  --color-rule:        oklch(1 0 0 / 0.12);
+  --color-rule-soft:   oklch(1 0 0 / 0.06);
+
+  --font-sans: Geist, system-ui, -apple-system, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --fs-display: 44px; --fs-deck: 22px; --fs-body: 14px;
+  --fs-meta: 11px; --fs-micro: 9.5px;
+
+  --baseline: 8px;
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px;
+  --s-5: 20px; --s-6: 24px; --s-7: 32px; --s-8: 48px;
+  --r-sm: 3px; --r-md: 6px; --r-lg: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--color-bg); color: var(--color-paper-warm);
+  font-family: var(--font-sans); font-size: var(--fs-body);
+  line-height: 24px; -webkit-font-smoothing: antialiased; min-height: 100vh;
+}
+.shell { max-width: 1120px; margin: 0 auto; padding: var(--s-8) var(--s-6); }
+
+header.mast {
+  display: flex; align-items: baseline; justify-content: space-between;
+  border-bottom: 1px solid var(--color-rule);
+  padding-bottom: var(--s-5); margin-bottom: var(--s-7);
+}
+header.mast .brand {
+  display: flex; align-items: center; gap: 12px;
+  font-weight: 800; font-size: 20px; letter-spacing: -0.06em;
+  text-transform: uppercase; color: var(--color-paper-warm);
+}
+header.mast .brand svg {
+  width: 32px; height: 20px; stroke: var(--color-neon-gold);
+  stroke-width: 2.5; stroke-linecap: round; fill: none;
+}
+header.mast h1 {
+  font-weight: 600; font-size: var(--fs-deck); line-height: 1.2;
+  color: var(--color-paper-warm); margin-top: 10px;
+}
+header.mast .meta {
+  font-family: var(--font-mono); font-size: var(--fs-meta);
+  color: var(--color-neon-gold);
+  text-transform: uppercase; letter-spacing: 0.08em; text-align: right;
+}
+
+.grid {
+  display: grid; grid-template-columns: 1fr 420px;
+  gap: var(--s-7); align-items: start;
+}
+@media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
+
+.panel {
+  background: var(--color-bg-card); border: 1px solid var(--color-rule);
+  border-radius: var(--r-lg); padding: var(--s-6);
+}
+.panel h2 {
+  font-size: var(--fs-meta); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--color-neon-gold); margin-bottom: var(--s-5);
+}
+
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); margin-bottom: var(--s-4); }
+.field-row.single { grid-template-columns: 1fr; }
+label.field { display: flex; flex-direction: column; gap: 6px; }
+label.field .name {
+  font-size: var(--fs-meta); font-weight: 500; color: oklch(0.75 0.02 90);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+label.field .hint {
+  font-size: var(--fs-micro); color: oklch(0.6 0.02 90);
+  font-family: var(--font-mono); margin-top: 2px;
+}
+input, select {
+  font-family: var(--font-mono); font-size: 15px; font-weight: 500;
+  padding: 10px 12px; background: var(--color-bg-deep);
+  color: var(--color-paper-warm); border: 1px solid var(--color-rule);
+  border-radius: var(--r-md); transition: border-color 0.15s, box-shadow 0.15s;
+}
+input:focus, select:focus {
+  outline: none; border-color: var(--color-neon-gold);
+  box-shadow: 0 0 0 3px oklch(0.95 0.12 100 / 0.18);
+}
+input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--color-danger); }
+select {
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' stroke='%23ddd6c7' stroke-width='1.5' fill='none'/></svg>");
+  background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px;
+}
+.ck-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 0; border-top: 1px solid var(--color-rule-soft);
+}
+.ck-row:first-of-type { border-top: none; }
+.ck-row label { flex: 1; cursor: pointer; font-size: var(--fs-body); }
+.ck-row .hint {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  color: oklch(0.6 0.02 90); margin-top: 2px;
+}
+
+button.submit {
+  width: 100%; margin-top: var(--s-6); padding: 16px;
+  font-family: var(--font-sans); font-size: var(--fs-body); font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  background: var(--color-neon-gold); color: var(--color-bg);
+  border: none; border-radius: var(--r-md); cursor: pointer;
+  transition: transform 0.1s;
+}
+button.submit:hover { transform: translateY(-1px); }
+button.reset {
+  width: 100%; margin-top: var(--s-3); padding: 10px;
+  background: transparent; color: oklch(0.7 0.02 90);
+  border: 1px solid var(--color-rule); border-radius: var(--r-md);
+  font-family: var(--font-sans); font-size: var(--fs-meta); cursor: pointer;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+button.reset:hover { border-color: var(--color-neon-gold); color: var(--color-neon-gold); }
+
+.verdict { display: flex; flex-direction: column; gap: var(--s-3); }
+.verdict .big {
+  font-family: var(--font-sans); font-size: var(--fs-display);
+  font-weight: 800; letter-spacing: -0.03em; line-height: 1; text-transform: uppercase;
+}
+.verdict.go    .big { color: var(--color-leaf); }
+.verdict.wait  .big { color: var(--color-sun-gold); }
+.verdict.skip  .big { color: var(--color-danger); }
+.verdict.pending .big { color: oklch(0.55 0.02 90); }
+.verdict .tagline {
+  font-family: var(--font-mono); font-size: var(--fs-meta);
+  color: oklch(0.7 0.02 90); text-transform: uppercase; letter-spacing: 0.12em;
+}
+
+.pillars { margin-top: var(--s-5); display: flex; flex-direction: column; gap: var(--s-2); }
+.pillar {
+  display: grid; grid-template-columns: 24px 1fr auto;
+  align-items: start; gap: var(--s-3); padding: 10px 0;
+  border-bottom: 1px solid var(--color-rule-soft);
+}
+.pillar:last-child { border-bottom: none; }
+.pillar .icon {
+  font-family: var(--font-mono); font-weight: 600; font-size: 15px; line-height: 1.4;
+}
+.pillar.pass .icon { color: var(--color-leaf); }
+.pillar.fail .icon { color: var(--color-danger); }
+.pillar.idle .icon { color: oklch(0.45 0.02 90); }
+.pillar .title { font-size: var(--fs-body); font-weight: 500; color: var(--color-paper-warm); }
+.pillar .detail {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  color: oklch(0.65 0.02 90); margin-top: 2px; line-height: 1.45;
+}
+.pillar .score {
+  font-family: var(--font-mono); font-size: var(--fs-meta);
+  font-weight: 600; color: oklch(0.72 0.02 90); white-space: nowrap;
+}
+
+.stats {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: var(--s-3); margin-top: var(--s-4);
+  padding-top: var(--s-4); border-top: 1px solid var(--color-rule-soft);
+}
+.stat .label {
+  font-size: var(--fs-micro); text-transform: uppercase;
+  letter-spacing: 0.08em; color: oklch(0.6 0.02 90); margin-bottom: 2px;
+}
+.stat .value {
+  font-family: var(--font-mono); font-size: 17px; font-weight: 600;
+  color: var(--color-neon-gold);
+}
+.stat.warn .value { color: var(--color-sun-gold); }
+.stat.bad .value  { color: var(--color-danger); }
+
+.cli {
+  margin-top: var(--s-5); padding: var(--s-4);
+  background: var(--color-bg-deep);
+  border: 1px dashed var(--color-rule); border-radius: var(--r-md);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  line-height: 1.6; color: oklch(0.75 0.02 90); word-break: break-all; white-space: pre-wrap;
+}
+.cli .label {
+  display: block; margin-bottom: 6px; color: var(--color-neon-gold);
+  text-transform: uppercase; letter-spacing: 0.1em; font-size: var(--fs-micro);
+}
+
+footer.note {
+  margin-top: var(--s-8); padding-top: var(--s-5);
+  border-top: 1px solid var(--color-rule-soft);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  color: oklch(0.55 0.02 90); text-align: center; letter-spacing: 0.06em;
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="mast">
+    <div>
+      <div class="brand">
+        <svg viewBox="0 0 32 20"><line x1="1" y1="10" x2="31" y2="10"/><line x1="11" y1="18" x2="21" y2="2"/></svg>
+        DASH
+      </div>
+      <h1>Propfirm v4 · Pre-Trade Checklist</h1>
+    </div>
+    <div class="meta">
+      <div>OxVox USD · $100 k paper</div>
+      <div id="nowStamp" style="color:oklch(0.6 0.02 90)"></div>
+    </div>
+  </header>
+
+  <div class="grid">
+    <!-- LEFT: Form -->
+    <section class="panel">
+      <h2>⚙ 7 个纪律输入</h2>
+
+      <div class="field-row">
+        <label class="field">
+          <span class="name">1 · Symbol</span>
+          <input type="text" id="symbol" placeholder="USOIL / BTCUSD / GOLD / TSLA ..." autofocus />
+          <span class="hint">TV 里的 ticker</span>
+        </label>
+        <label class="field">
+          <span class="name">2 · Side</span>
+          <select id="side">
+            <option value="long">LONG — Buy</option>
+            <option value="short">SHORT — Sell</option>
+          </select>
+          <span class="hint">方向</span>
+        </label>
+      </div>
+
+      <div class="field-row">
+        <label class="field">
+          <span class="name">3 · Entry price</span>
+          <input type="number" id="entry" step="any" placeholder="e.g. 87.22" />
+          <span class="hint">LIMIT 挂单价 or Market fill 估算</span>
+        </label>
+        <label class="field">
+          <span class="name">4 · Stop Loss price</span>
+          <input type="number" id="sl" step="any" placeholder="必填 — propfirm 铁律" />
+          <span class="hint">long 下方 / short 上方</span>
+        </label>
+      </div>
+
+      <div class="field-row">
+        <label class="field">
+          <span class="name">5 · Take Profit price</span>
+          <input type="number" id="tp" step="any" placeholder="必填 — R:R ≥ 1:1.5" />
+          <span class="hint">R:R ≥ 1.5 否则 skip</span>
+        </label>
+        <label class="field">
+          <span class="name">6 · Qty (units / shares / contracts)</span>
+          <input type="number" id="qty" step="any" placeholder="e.g. 1" />
+          <span class="hint">风险 ≤ 1 % equity ($1 k)</span>
+        </label>
+      </div>
+
+      <div class="field-row single">
+        <label class="field">
+          <span class="name">7 · Willy score · grade · status</span>
+          <div style="display:grid; grid-template-columns:100px 120px 1fr; gap:10px;">
+            <input type="number" id="willyScore" min="0" max="10" step="0.1" placeholder="score" />
+            <select id="willyGrade">
+              <option value="">grade...</option>
+              <option value="A+">A+</option>
+              <option value="A">A</option>
+              <option value="B">B</option>
+              <option value="C">C</option>
+            </select>
+            <select id="willyStatus">
+              <option value="">status...</option>
+              <option value="Active">Active (好信号)</option>
+              <option value="Trail">TP1 ✓ Trail</option>
+              <option value="No Trade">No Trade</option>
+            </select>
+          </div>
+          <span class="hint">需 score ≥ 6.5 + grade ∈ A/A+ + status ≠ "No Trade"</span>
+        </label>
+      </div>
+
+      <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-rule-soft);">
+        <div class="ck-row">
+          <input type="checkbox" id="hasBinary" />
+          <label for="hasBinary">
+            48 小时内有 earnings / FOMC / NFP / CPI / 重大央行决议？
+            <div class="hint">propfirm 铁律：binary event 前必 flat，勾上直接 skip</div>
+          </label>
+        </div>
+      </div>
+
+      <button class="submit" id="btnValidate">↓ 检查这一笔</button>
+      <button class="reset" id="btnReset">清空重来</button>
+    </section>
+
+    <!-- RIGHT: Verdict -->
+    <aside class="panel">
+      <h2>✦ 裁决</h2>
+      <div class="verdict pending" id="verdict">
+        <div class="big" id="verdictBig">PENDING</div>
+        <div class="tagline" id="verdictTag">Fill the 7 fields and press ↓</div>
+      </div>
+
+      <div class="stats">
+        <div class="stat" id="stat-rr"><div class="label">R:R</div><div class="value">—</div></div>
+        <div class="stat" id="stat-risk"><div class="label">Risk $</div><div class="value">—</div></div>
+        <div class="stat" id="stat-reward"><div class="label">Reward $</div><div class="value">—</div></div>
+        <div class="stat" id="stat-breakeven"><div class="label">Breakeven WR</div><div class="value">—</div></div>
+      </div>
+
+      <div class="pillars" id="pillars"></div>
+
+      <div class="cli" id="cliCmd" style="display:none">
+        <span class="label">✓ CLI 登记这笔到 journal</span>
+        <div id="cliCmdText"></div>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="note">DASH · Custom Digital Systems · propfirm-v4 · baseline 8px rhythm</footer>
+</div>
+
+<script>
+// Constants
+const EQUITY = 100000;
+const MAX_RISK_PCT = 1.0;
+const MIN_RR = 1.5;
+const MIN_WILLY_SCORE = 6.5;
+const VALID_GRADES = ['A+', 'A'];
+
+// Timestamp
+document.getElementById('nowStamp').textContent =
+  new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+
+// ─── Safe DOM helpers ───
+function clearEl(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+function makeEl(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text !== undefined && text !== null) el.textContent = String(text);
+  return el;
+}
+
+// ─── Core compute ───
+function compute() {
+  const symbol     = document.getElementById('symbol').value.trim();
+  const side       = document.getElementById('side').value;
+  const entry      = parseFloat(document.getElementById('entry').value);
+  const sl         = parseFloat(document.getElementById('sl').value);
+  const tp         = parseFloat(document.getElementById('tp').value);
+  const qty        = parseFloat(document.getElementById('qty').value);
+  const willyScore = parseFloat(document.getElementById('willyScore').value);
+  const willyGrade = document.getElementById('willyGrade').value;
+  const willyStatus= document.getElementById('willyStatus').value;
+  const hasBinary  = document.getElementById('hasBinary').checked;
+
+  const ok = {
+    filled: !!symbol && isFinite(entry) && isFinite(sl) && isFinite(tp)
+            && isFinite(qty) && isFinite(willyScore) && !!willyGrade && !!willyStatus,
+  };
+
+  let riskPerUnit = NaN, rewardPerUnit = NaN, rrRatio = NaN;
+  let riskUSD = NaN, rewardUSD = NaN, riskPct = NaN, breakevenWR = NaN;
+
+  if (isFinite(entry) && isFinite(sl) && isFinite(tp)) {
+    if (side === 'long') {
+      riskPerUnit   = entry - sl;
+      rewardPerUnit = tp - entry;
+    } else {
+      riskPerUnit   = sl - entry;
+      rewardPerUnit = entry - tp;
+    }
+    if (riskPerUnit > 0 && rewardPerUnit > 0) {
+      rrRatio = rewardPerUnit / riskPerUnit;
+      if (isFinite(qty)) {
+        riskUSD   = riskPerUnit * qty;
+        rewardUSD = rewardPerUnit * qty;
+        riskPct   = (riskUSD / EQUITY) * 100;
+      }
+      breakevenWR = 1 / (1 + rrRatio);
+    }
+  }
+
+  return {
+    symbol, side, entry, sl, tp, qty,
+    willyScore, willyGrade, willyStatus, hasBinary,
+    ok, riskPerUnit, rewardPerUnit, rrRatio,
+    riskUSD, rewardUSD, riskPct, breakevenWR,
+  };
+}
+
+function runPillars(d) {
+  const sideValid = d.side === 'long'
+    ? (d.sl < d.entry && d.tp > d.entry)
+    : (d.sl > d.entry && d.tp < d.entry);
+
+  return [
+    {
+      id: 'p1', title: '① SL 已设 · 方向正确',
+      pass: isFinite(d.sl) && sideValid,
+      detail: sideValid
+        ? `SL ${d.sl} 位于 ${d.side === 'long' ? '入场下方' : '入场上方'} ✓`
+        : (isFinite(d.sl)
+            ? `❌ SL 位置方向错 — long 必须 SL < Entry，short 反之`
+            : '❌ SL 没填 — propfirm 铁律'),
+      score: isFinite(d.sl) ? d.sl.toString() : '—',
+    },
+    {
+      id: 'p2', title: '② TP 已设 · 方向正确',
+      pass: isFinite(d.tp) && sideValid,
+      detail: sideValid && isFinite(d.tp)
+        ? `TP ${d.tp} 位于 ${d.side === 'long' ? '入场上方' : '入场下方'} ✓`
+        : '❌ TP 位置错或未填',
+      score: isFinite(d.tp) ? d.tp.toString() : '—',
+    },
+    {
+      id: 'p3', title: '③ R:R ≥ 1 : 1.5',
+      pass: isFinite(d.rrRatio) && d.rrRatio >= MIN_RR,
+      detail: isFinite(d.rrRatio)
+        ? (d.rrRatio >= MIN_RR
+            ? `R:R 1 : ${d.rrRatio.toFixed(2)} ✓（breakeven WR ${(d.breakevenWR*100).toFixed(1)} %）`
+            : `❌ R:R 1 : ${d.rrRatio.toFixed(2)} < 1.5 — 赔率太低，需 WR ${(d.breakevenWR*100).toFixed(1)} % 才保本`)
+        : '等 SL/TP 填完',
+      score: isFinite(d.rrRatio) ? `1:${d.rrRatio.toFixed(2)}` : '—',
+    },
+    {
+      id: 'p4', title: `④ 仓位风险 ≤ ${MAX_RISK_PCT} % equity`,
+      pass: isFinite(d.riskPct) && d.riskPct <= MAX_RISK_PCT && d.riskPct > 0,
+      detail: isFinite(d.riskPct)
+        ? (d.riskPct <= MAX_RISK_PCT
+            ? `风险 $${d.riskUSD.toFixed(2)} = ${d.riskPct.toFixed(3)} % equity ✓`
+            : `❌ 风险 ${d.riskPct.toFixed(2)} % 超限 — 减 qty 或 SL 拉近`)
+        : '等 qty 填完',
+      score: isFinite(d.riskPct) ? `${d.riskPct.toFixed(2)} %` : '—',
+    },
+    {
+      id: 'p5', title: '⑤ Willy 系统信号对齐',
+      pass: isFinite(d.willyScore) && d.willyScore >= MIN_WILLY_SCORE
+            && VALID_GRADES.includes(d.willyGrade)
+            && d.willyStatus !== 'No Trade',
+      detail: (() => {
+        if (!isFinite(d.willyScore) || !d.willyGrade || !d.willyStatus) return '等 Willy 数据填完';
+        const reasons = [];
+        if (d.willyScore < MIN_WILLY_SCORE) reasons.push(`score ${d.willyScore} < ${MIN_WILLY_SCORE}`);
+        if (!VALID_GRADES.includes(d.willyGrade)) reasons.push(`grade ${d.willyGrade} ∉ {A, A+}`);
+        if (d.willyStatus === 'No Trade') reasons.push('status = No Trade');
+        return reasons.length === 0
+          ? `Willy ${d.willyGrade} score ${d.willyScore} · ${d.willyStatus} ✓`
+          : `❌ ${reasons.join(' · ')}`;
+      })(),
+      score: isFinite(d.willyScore) ? `${d.willyScore}/10 ${d.willyGrade || '?'}` : '—',
+    },
+    {
+      id: 'p6', title: '⑥ 48 h 内无 binary event',
+      pass: !d.hasBinary,
+      detail: d.hasBinary
+        ? '❌ Earnings / FOMC / NFP / CPI 前持仓 = 赌硬币'
+        : '无 binary event ✓',
+      score: d.hasBinary ? 'BLOCK' : 'OK',
+    },
+    {
+      id: 'p7', title: '⑦ Symbol + qty 齐备（journal-ready）',
+      pass: !!d.symbol && isFinite(d.qty) && d.qty > 0,
+      detail: (d.symbol && isFinite(d.qty))
+        ? `${d.symbol} × ${d.qty} ✓`
+        : '❌ 缺 symbol 或 qty',
+      score: d.symbol ? `${d.symbol}` : '—',
+    },
+  ];
+}
+
+// ─── Safe rendering ───
+function renderPillars(pillars) {
+  const host = document.getElementById('pillars');
+  clearEl(host);
+  pillars.forEach(p => {
+    const cls = p.pass === null ? 'idle' : (p.pass ? 'pass' : 'fail');
+    const row = makeEl('div', `pillar ${cls}`);
+    const icon = makeEl('div', 'icon', p.pass ? '✓' : (p.pass === false ? '✕' : '◌'));
+    const mid = makeEl('div');
+    mid.appendChild(makeEl('div', 'title', p.title));
+    mid.appendChild(makeEl('div', 'detail', p.detail));
+    const score = makeEl('div', 'score', p.score);
+    row.appendChild(icon);
+    row.appendChild(mid);
+    row.appendChild(score);
+    host.appendChild(row);
+  });
+}
+
+function renderStats(d) {
+  const assign = (id, text, mod) => {
+    const stat = document.getElementById(id);
+    stat.querySelector('.value').textContent = text;
+    stat.classList.remove('bad', 'warn');
+    if (mod) stat.classList.add(mod);
+  };
+
+  assign('stat-rr',
+    isFinite(d.rrRatio) ? `1 : ${d.rrRatio.toFixed(2)}` : '—',
+    isFinite(d.rrRatio) && d.rrRatio < MIN_RR ? 'bad'
+      : (isFinite(d.rrRatio) && d.rrRatio < 2 ? 'warn' : null));
+
+  assign('stat-risk',
+    isFinite(d.riskUSD) ? `$${d.riskUSD.toFixed(2)}` : '—',
+    isFinite(d.riskPct) && d.riskPct > MAX_RISK_PCT ? 'bad' : null);
+
+  assign('stat-reward',
+    isFinite(d.rewardUSD) ? `$${d.rewardUSD.toFixed(2)}` : '—', null);
+
+  assign('stat-breakeven',
+    isFinite(d.breakevenWR) ? `${(d.breakevenWR * 100).toFixed(1)} %` : '—',
+    isFinite(d.breakevenWR) && d.breakevenWR > 0.66 ? 'bad'
+      : (isFinite(d.breakevenWR) && d.breakevenWR > 0.5 ? 'warn' : null));
+}
+
+function renderVerdict(passCount, totalCount, d, pillars) {
+  const vEl = document.getElementById('verdict');
+  const bigEl = document.getElementById('verdictBig');
+  const tagEl = document.getElementById('verdictTag');
+  const cliEl = document.getElementById('cliCmd');
+  const cliText = document.getElementById('cliCmdText');
+
+  vEl.className = 'verdict';
+
+  if (!d.ok.filled) {
+    vEl.classList.add('pending');
+    bigEl.textContent = 'PENDING';
+    tagEl.textContent = '先把 7 个字段都填好';
+    cliEl.style.display = 'none';
+    return;
+  }
+
+  if (passCount === totalCount) {
+    vEl.classList.add('go');
+    bigEl.textContent = '✓ GO';
+    tagEl.textContent = `7/7 条纪律通过 · 可以在 TV 点 Submit`;
+    const setupPieces = [
+      d.willyScore >= MIN_WILLY_SCORE && VALID_GRADES.includes(d.willyGrade) ? 'willy_aligned' : 'discretionary',
+      d.side === 'long' ? 'buy' : 'sell',
+      `score${d.willyScore}`,
+      `grade${d.willyGrade}`,
+    ].filter(Boolean).join('_');
+    const statusSlug = d.willyStatus.toLowerCase().replace(/\s+/g, '_');
+    cliText.textContent =
+      `cd fincept-qt/scripts/data_algo && \\\npython3 -m propfirm_engine.log_tv_trade open \\\n  --symbol ${d.symbol} --side ${d.side} \\\n  --entry ${d.entry} --sl ${d.sl} --tp ${d.tp} \\\n  --setup "${setupPieces}" --regime "willy_${statusSlug}"`;
+    cliEl.style.display = 'block';
+    return;
+  }
+
+  const failedIds = pillars.filter(p => !p.pass).map(p => p.id);
+  const hardFail = failedIds.some(id => ['p1', 'p6'].includes(id));
+  const soft = failedIds.length <= 2 && !hardFail;
+
+  if (hardFail) {
+    vEl.classList.add('skip');
+    bigEl.textContent = '✕ SKIP';
+    tagEl.textContent = failedIds.includes('p1')
+      ? '没设 SL = 纪律红线 · 绝对不做'
+      : 'binary event 前持仓 = 赌硬币 · 跳过';
+  } else if (soft) {
+    vEl.classList.add('wait');
+    bigEl.textContent = '◐ WAIT';
+    tagEl.textContent = `${failedIds.length} 条软纪律没过 · 观望 or 改参数重来`;
+  } else {
+    vEl.classList.add('skip');
+    bigEl.textContent = '✕ SKIP';
+    tagEl.textContent = `${failedIds.length} 条失败 · 不是高质量 setup`;
+  }
+  cliEl.style.display = 'none';
+}
+
+function validate() {
+  const d = compute();
+  const pillars = runPillars(d);
+  const passCount = pillars.filter(p => p.pass).length;
+  renderPillars(pillars);
+  renderStats(d);
+  renderVerdict(passCount, pillars.length, d, pillars);
+}
+
+function resetAll() {
+  ['symbol', 'entry', 'sl', 'tp', 'qty', 'willyScore'].forEach(id =>
+    document.getElementById(id).value = '');
+  document.getElementById('side').value = 'long';
+  document.getElementById('willyGrade').value = '';
+  document.getElementById('willyStatus').value = '';
+  document.getElementById('hasBinary').checked = false;
+  document.getElementById('verdict').className = 'verdict pending';
+  document.getElementById('verdictBig').textContent = 'PENDING';
+  document.getElementById('verdictTag').textContent = 'Fill the 7 fields and press ↓';
+  clearEl(document.getElementById('pillars'));
+  ['stat-rr', 'stat-risk', 'stat-reward', 'stat-breakeven'].forEach(id => {
+    const el = document.getElementById(id);
+    el.querySelector('.value').textContent = '—';
+    el.classList.remove('bad', 'warn');
+  });
+  document.getElementById('cliCmd').style.display = 'none';
+  document.getElementById('symbol').focus();
+}
+
+document.getElementById('btnValidate').addEventListener('click', validate);
+document.getElementById('btnReset').addEventListener('click', resetAll);
+document.querySelectorAll('input, select').forEach(el =>
+  el.addEventListener('change', () => {
+    const d = compute();
+    if (d.ok.filled) validate();
+  }));
+</script>
+</body>
+</html>
