@@ -1,9 +1,10 @@
 {
-  "current_phase": "p1",
-  "completed_phases": ["p0"],
-  "last_git_tag": "v4.p0",
-  "last_report": null,
+  "current_phase": "p2",
+  "completed_phases": ["p0", "p1"],
+  "last_git_tag": "v4.p1",
+  "last_report": "fincept-qt/scripts/data_algo/propfirm_engine/reports/phase_1_report.md",
   "spec": "docs/superpowers/specs/2026-04-20-propfirm-v4-engine-design.md",
   "plan": "docs/superpowers/plans/2026-04-20-propfirm-v4-engine-plan.md",
-  "notes": "P0 scaffolding done 2026-04-20. propfirm_engine/ package created with trade_journal schema (20 cols per spec §5 enumeration; plan pass gate said '17' as shorthand — spec is source of truth). news_calendar.yaml stub covers 2026-04-30 .. 2026-05-13 only — expand before any P1 backtest spanning beyond that window. Branch v4/p0-scaffolding, next phase branches from v4.p0 tag."
+  "p10_strategy": ".planning/propfirm_v4_p10_strategy.md",
+  "notes": "P1 session filter done 2026-04-20. Pass gate A 7/8 + B mean 0.53. Overall PASS. Structural finding: v3 baseline Sharpe negative on 6/8 scenarios — P2 ATR gate must flag if ≥4 scenarios remain negative after trail. Tag v4.p1, branch v4/p1-session-filter. Next: v4/p2-atr-trail off v4.p1."
 }

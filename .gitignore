@@ -137,6 +137,8 @@ docs/superpowers/
 
 # ── Propfirm v4 engine runtime artefacts ─────────────────────
 fincept-qt/scripts/data_algo/propfirm_engine/*.sqlite
-fincept-qt/scripts/data_algo/propfirm_engine/reports/
+# raw backtest dumps are runtime, but phase_N_report.md is an artefact
+fincept-qt/scripts/data_algo/propfirm_engine/reports/*.json
+fincept-qt/scripts/data_algo/propfirm_engine/reports/*.csv
 # keep news calendar tracked despite global *.yaml rule above
 !fincept-qt/scripts/data_algo/propfirm_engine/news_calendar.yaml
