@@ -1,10 +1,14 @@
 {
-  "current_phase": "p2",
+  "current_phase": "p2_redesign",
   "completed_phases": ["p0", "p1"],
   "last_git_tag": "v4.p1",
-  "last_report": "fincept-qt/scripts/data_algo/propfirm_engine/reports/phase_1_report.md",
+  "last_report": "fincept-qt/scripts/data_algo/propfirm_engine/reports/phase_2_report.md",
   "spec": "docs/superpowers/specs/2026-04-20-propfirm-v4-engine-design.md",
   "plan": "docs/superpowers/plans/2026-04-20-propfirm-v4-engine-plan.md",
   "p10_strategy": ".planning/propfirm_v4_p10_strategy.md",
-  "notes": "P1 session filter done 2026-04-20. Pass gate A 7/8 + B mean 0.53. Overall PASS. Structural finding: v3 baseline Sharpe negative on 6/8 scenarios — P2 ATR gate must flag if ≥4 scenarios remain negative after trail. Tag v4.p1, branch v4/p1-session-filter. Next: v4/p2-atr-trail off v4.p1."
+  "p2_attempt_1_status": "FAILED",
+  "p2_retry_counter": 1,
+  "p2_retry_budget": 2,
+  "p2_failure_summary": "Gate A 2/8, Gate B 6 violations, only QQQ genuinely improved. ATR trail hurts range regimes.",
+  "notes": "P2 attempt 1 failed 2026-04-20. Work preserved on branch v4/p2-atr-trail (no tag). Waiting on P10 (Nolan) to pick A (regime-conditional trail), B (2.5x widen for range), or C (skip P2 to P3). v4.p1 remains valid rollback point."
 }
