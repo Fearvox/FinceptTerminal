@@ -1,0 +1,9 @@
+{
+  "current_phase": "p1",
+  "completed_phases": ["p0"],
+  "last_git_tag": "v4.p0",
+  "last_report": null,
+  "spec": "docs/superpowers/specs/2026-04-20-propfirm-v4-engine-design.md",
+  "plan": "docs/superpowers/plans/2026-04-20-propfirm-v4-engine-plan.md",
+  "notes": "P0 scaffolding done 2026-04-20. propfirm_engine/ package created with trade_journal schema (20 cols per spec §5 enumeration; plan pass gate said '17' as shorthand — spec is source of truth). news_calendar.yaml stub covers 2026-04-30 .. 2026-05-13 only — expand before any P1 backtest spanning beyond that window. Branch v4/p0-scaffolding, next phase branches from v4.p0 tag."
+}

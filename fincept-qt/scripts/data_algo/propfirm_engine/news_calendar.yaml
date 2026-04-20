@@ -1,0 +1,27 @@
+# Propfirm v4 — news calendar (stub)
+#
+# Format:
+#   events:
+#     - ts: ISO-8601 UTC timestamp of scheduled release
+#       kind: FOMC | NFP | CPI | PCE | GDP | JOLTS | PPI
+#       skip_window_min: bars within ±N minutes of ts are blocked
+#
+# Sources to fill in:
+#   FOMC — https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+#   NFP  — BLS Employment Situation release schedule
+#   CPI  — BLS CPI release schedule
+#
+# Stub only covers a two-week window; session_filter.is_near_news()
+# silently allows bars outside the listed range — so expand before P1
+# backtests that span more than the listed coverage.
+
+events:
+  - ts: "2026-04-30T18:00:00Z"
+    kind: FOMC
+    skip_window_min: 15
+  - ts: "2026-05-02T12:30:00Z"
+    kind: NFP
+    skip_window_min: 15
+  - ts: "2026-05-13T12:30:00Z"
+    kind: CPI
+    skip_window_min: 15

@@ -133,3 +133,10 @@ fincept-qt/scripts/exchange/.cache/
 # ── Internal planning docs ────────────────────────────────────
 fincept-qt/docs/superpowers/
 docs/superpowers/
+.gstack/
+
+# ── Propfirm v4 engine runtime artefacts ─────────────────────
+fincept-qt/scripts/data_algo/propfirm_engine/*.sqlite
+fincept-qt/scripts/data_algo/propfirm_engine/reports/
+# keep news calendar tracked despite global *.yaml rule above
+!fincept-qt/scripts/data_algo/propfirm_engine/news_calendar.yaml
