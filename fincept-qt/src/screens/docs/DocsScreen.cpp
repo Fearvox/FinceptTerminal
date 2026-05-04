@@ -243,7 +243,7 @@ QWidget* DocsScreen::page_welcome() {
                                      "■  Real-time market data across equities, crypto, forex, commodities\n"
                                      "■  Multi-exchange crypto trading (Kraken, HyperLiquid, Binance, etc.)\n"
                                      "■  Paper trading engine with simulated order matching\n"
-                                     "■  100+ Python analytics scripts (CFA-level: equity, portfolio, derivatives)\n"
+                                     "■  100+ Python analytics scripts (equity, portfolio, derivatives)\n"
                                      "■  18-module QuantLib quantitative analysis suite (590+ endpoints)\n"
                                      "■  AI Quant Lab with ML models, factor discovery, HFT, RL trading\n"
                                      "■  Multiple AI agent frameworks (Geopolitics, Economic, Hedge Fund)\n"
@@ -1405,17 +1405,17 @@ void DocsScreen::build_sidebar() {
     add_item(ai, "Alpha Arena", "alpha_arena");
 
     // ── Data Sources ─────────────────────────────────────────────────────────
-    auto* data = add_category("DATA SOURCES");
-    add_item(data, "DBnomics", "dbnomics");
-    add_item(data, "Economics", "economics");
-    add_item(data, "AkShare Data", "akshare");
-    add_item(data, "Government Data", "gov_data");
+    auto* data_cat = add_category("DATA SOURCES");
+    add_item(data_cat, "DBnomics", "dbnomics");
+    add_item(data_cat, "Economics", "economics");
+    add_item(data_cat, "AkShare Data", "akshare");
+    add_item(data_cat, "Government Data", "gov_data");
 
     // ── Geopolitics & Alt ────────────────────────────────────────────────────
     auto* geo = add_category("GEOPOLITICS & ALT");
     add_item(geo, "Geopolitics", "geopolitics");
     add_item(geo, "Maritime", "maritime");
-    add_item(geo, "Polymarket", "polymarket");
+    add_item(geo, "Prediction Markets", "polymarket");
     add_item(geo, "Alt Investments", "alt_investments");
 
     // ── Tools ────────────────────────────────────────────────────────────────

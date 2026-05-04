@@ -304,7 +304,7 @@ void RelationshipMapScreen::build_ui() {
 
     // Center card click → navigate to equity research
     connect(scene_, &relmap::RelationshipGraphScene::center_card_clicked,
-            this, [this](const QString& ticker) {
+            this, [](const QString& ticker) {
                 fincept::EventBus::instance().publish("equity_research.load_symbol",
                     {{"symbol", ticker}, {"type", "equity"}});
             });
@@ -647,10 +647,10 @@ void RelationshipMapScreen::on_progress(int percent, const QString& message) {
     }
 }
 
-void RelationshipMapScreen::on_data_ready(const RelationshipData& data) {
-    current_data_ = data;
+void RelationshipMapScreen::on_data_ready(const RelationshipData& payload) {
+    current_data_ = payload;
     has_data_ = true;
-    loaded_ticker_ = data.company.ticker;
+    loaded_ticker_ = payload.company.ticker;
     progress_bar_->hide();
     progress_label_->setText("Complete");
     legend_widget_->show();

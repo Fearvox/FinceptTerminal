@@ -1,4 +1,4 @@
-#include "ui/navigation/ToolBar.h"
+﻿#include "ui/navigation/ToolBar.h"
 
 #include "auth/AuthManager.h"
 #include "ui/theme/Theme.h"
@@ -7,9 +7,11 @@
 #include <QAction>
 #include <QDateTime>
 #include <QFontMetrics>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QScreen>
 
 namespace fincept::ui {
 
@@ -265,6 +267,32 @@ QMenu* ToolBar::build_file_menu() {
     auto* m = new QMenu("File", this);
     m->setStyleSheet(popup_ss());
     m->addAction("New Window", this, [this]() { emit action_triggered("new_window"); });
+
+    // "Move to Monitor" — rebuilt on every popup so plug/unplug events are
+    // reflected without restarting the app. Emits "move_to_monitor:<name>"
+    // so WindowFrame can look the screen up by name (indices are unstable).
+    auto* monitors = m->addMenu("Move to Monitor");
+    monitors->setStyleSheet(popup_ss());
+    connect(monitors, &QMenu::aboutToShow, this, [this, monitors]() {
+        monitors->clear();
+        const auto screens = QGuiApplication::screens();
+        if (screens.size() <= 1) {
+            auto* only = monitors->addAction("(single monitor)");
+            only->setEnabled(false);
+            return;
+        }
+        int idx = 1;
+        for (QScreen* s : screens) {
+            const QString name = s->name();
+            const QSize size = s->size();
+            const QString label =
+                QString("%1. %2  (%3×%4)").arg(idx++).arg(name).arg(size.width()).arg(size.height());
+            monitors->addAction(label, this, [this, name]() {
+                emit action_triggered(QString("move_to_monitor:%1").arg(name));
+            });
+        }
+    });
+
     m->addSeparator();
     m->addAction("New Workspace", this, [this]() { emit action_triggered("new_workspace"); });
     m->addAction("Open Workspace", this, [this]() { emit action_triggered("open_workspace"); });
@@ -319,9 +347,13 @@ QMenu* ToolBar::build_navigate_menu() {
     auto* trd = add_sub("Trading & Portfolio");
     nav(trd, "Equity Trading", "equity_trading");
     nav(trd, "Alpha Arena", "alpha_arena");
-    nav(trd, "Polymarket", "polymarket");
+    nav(trd, "Prediction Markets", "polymarket");
     nav(trd, "Derivatives", "derivatives");
     nav(trd, "Watchlist", "watchlist");
+
+    // Crypto / on-chain identity
+    auto* crypto = add_sub("Crypto");
+    nav(crypto, "Crypto Center", "crypto_center");
 
     // Research & Intelligence
     auto* res = add_sub("Research & Intelligence");
@@ -358,10 +390,20 @@ QMenu* ToolBar::build_navigate_menu() {
 QMenu* ToolBar::build_view_menu() {
     auto* m = new QMenu("View", this);
     m->setStyleSheet(popup_ss());
+    // Component Browser at the top — Bloomberg's discoverability hook.
+    m->addAction("Component Browser\tCtrl+K", this,
+                 [this]() { emit action_triggered("browse_components"); });
+    m->addSeparator();
     m->addAction("Fullscreen\tF11", this, [this]() { emit action_triggered("fullscreen"); });
     m->addSeparator();
     m->addAction("Focus Mode\tF10", this, [this]() { emit action_triggered("focus_mode"); });
-    m->addAction("Always on Top", this, [this]() { emit action_triggered("always_on_top"); });
+    // Phase 11: the shortcut is Ctrl+Shift+T; we don't mark the QAction as
+    // checkable because its state is owned by WindowFrame::always_on_top_ —
+    // a checkable toolbar action would drift out of sync on window focus
+    // changes. If the user cares about the visual, the window's title bar
+    // retains the OS-level "always on top" decoration on most platforms.
+    m->addAction("Always on Top\tCtrl+Shift+T", this,
+                 [this]() { emit action_triggered("always_on_top"); });
     m->addSeparator();
 
     // Float any screen as a separate window on another monitor

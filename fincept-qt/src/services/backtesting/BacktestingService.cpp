@@ -5,6 +5,7 @@
 #include "python/PythonRunner.h"
 #include "storage/cache/CacheManager.h"
 
+#include <QHash>
 #include <QJsonDocument>
 #include <QPointer>
 
@@ -25,11 +26,28 @@ void BacktestingService::execute(const QString& provider, const QString& command
     auto script = QString("Analytics/backtesting/%1/%1_provider.py").arg(provider);
     auto json_str = QJsonDocument(args).toJson(QJsonDocument::Compact);
 
+    // The UI uses short command ids (matching fincept-qt/src/services/backtesting/
+    // BacktestingTypes.h::all_commands()); every Python provider's main() dispatches
+    // on the canonical, longer names. Translate at the boundary so screen/types
+    // code keeps the short ids while the subprocess sees what its dispatcher expects.
+    static const QHash<QString, QString> kPyCommandMap{
+        {"backtest", "run_backtest"},
+        {"indicator", "calculate_indicator"},
+        {"signals", "generate_signals"},
+        {"labels", "generate_labels"},
+        {"splits", "generate_splits"},
+        {"returns", "analyze_returns"},
+        {"indicator_sweep", "indicator_param_sweep"},
+        // labels_to_signals, walk_forward, optimize, indicator_signals: UI
+        // short-id matches the Python long name; pass through unchanged.
+    };
+    const QString py_command = kPyCommandMap.value(command, command);
+
     QPointer<BacktestingService> self = this;
     auto ctx = QString("%1/%2").arg(provider, command);
 
     python::PythonRunner::instance().run(
-        script, {command, json_str}, [self, provider, command, ctx](python::PythonResult result) {
+        script, {py_command, json_str}, [self, provider, command, ctx](python::PythonResult result) {
             if (!self)
                 return;
             if (!result.success) {
@@ -44,8 +62,24 @@ void BacktestingService::execute(const QString& provider, const QString& command
                 emit self->error_occurred(ctx, "Invalid JSON response");
                 return;
             }
+            // All Python providers wrap their payload in {success, data, error?}.
+            // Surface failures via error_occurred and emit the inner `data` so
+            // the screen sees the raw result (performance/trades/etc.) directly.
+            auto root = doc.object();
+            const bool ok = root.value("success").toBool(true);
+            if (!ok) {
+                auto err = root.value("error").toString();
+                if (err.isEmpty())
+                    err = root.value("message").toString("Backtest failed");
+                LOG_ERROR("Backtesting", QString("[%1] Provider error: %2").arg(ctx, err));
+                emit self->error_occurred(ctx, err);
+                return;
+            }
+            QJsonObject payload = root.contains("data") && root.value("data").isObject()
+                                      ? root.value("data").toObject()
+                                      : root;
             LOG_INFO("Backtesting", QString("[%1] Result ready").arg(ctx));
-            emit self->result_ready(provider, command, doc.object());
+            emit self->result_ready(provider, command, payload);
         });
 }
 
@@ -114,9 +148,12 @@ void BacktestingService::load_command_options(const QString& provider) {
 }
 
 void BacktestingService::list_strategies() {
+    // fincept_provider.py exposes the catalog under "get_strategies" and requires
+    // a JSON args payload (sys.argv[2]) — pass an empty object.
     QPointer<BacktestingService> self = this;
     python::PythonRunner::instance().run(
-        "Analytics/backtesting/fincept/fincept_provider.py", {"list_strategies"}, [self](python::PythonResult result) {
+        "Analytics/backtesting/fincept/fincept_provider.py", {"get_strategies", "{}"},
+        [self](python::PythonResult result) {
             if (!self)
                 return;
             if (!result.success) {

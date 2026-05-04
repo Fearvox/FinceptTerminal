@@ -8,15 +8,23 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Hits](https://hits.sh/github.com/Fincept-Corporation/FinceptTerminal.svg?label=Visits)](https://hits.sh/github.com/Fincept-Corporation/FinceptTerminal/)
 
-[![Twitter](https://img.shields.io/badge/-Twitter-1DA1F2?style=flat-square&logo=twitter&logoColor=white)](https://twitter.com/intent/tweet?text=Check%20out%20FinceptTerminal&url=https%3A//github.com/Fincept-Corporation/FinceptTerminal/) [![LinkedIn](https://img.shields.io/badge/-LinkedIn-0077B5?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/sharing/share-offsite/?url=https%3A//github.com/Fincept-Corporation/FinceptTerminal/) [![Facebook](https://img.shields.io/badge/-Facebook-1877F2?style=flat-square&logo=facebook&logoColor=white)](https://www.facebook.com/sharer/sharer.php?u=https%3A//github.com/Fincept-Corporation/FinceptTerminal/) [![Reddit](https://img.shields.io/badge/-Reddit-FF4500?style=flat-square&logo=reddit&logoColor=white)](https://www.reddit.com/submit?url=https%3A//github.com/Fincept-Corporation/FinceptTerminal/&title=FinceptTerminal) [![WhatsApp](https://img.shields.io/badge/-WhatsApp-25D366?style=flat-square&logo=whatsapp&logoColor=white)](https://api.whatsapp.com/send?text=Check%20out%20FinceptTerminal%3A%20https%3A//github.com/Fincept-Corporation/FinceptTerminal/)
+<a href="https://trendshift.io/repositories/17028" target="_blank"><img src="https://trendshift.io/api/badge/repositories/17028" alt="Fincept-Corporation%2FFinceptTerminal | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+
+[![GitHub Stars](https://img.shields.io/github/stars/Fincept-Corporation/FinceptTerminal?style=social)](https://github.com/Fincept-Corporation/FinceptTerminal/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/Fincept-Corporation/FinceptTerminal?style=social)](https://github.com/Fincept-Corporation/FinceptTerminal/network/members)
+[![GitHub Watchers](https://img.shields.io/github/watchers/Fincept-Corporation/FinceptTerminal?style=social)](https://github.com/Fincept-Corporation/FinceptTerminal/watchers)
+[![GitHub Release](https://img.shields.io/github/v/release/Fincept-Corporation/FinceptTerminal?color=brightgreen&logo=github)](https://github.com/Fincept-Corporation/FinceptTerminal/releases)
+[![GitHub Issues](https://img.shields.io/github/issues/Fincept-Corporation/FinceptTerminal)](https://github.com/Fincept-Corporation/FinceptTerminal/issues)
+
+[![X](https://img.shields.io/badge/-X-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/finceptcorp) [![Twitter](https://img.shields.io/badge/-Twitter-1DA1F2?style=flat-square&logo=twitter&logoColor=white)](https://twitter.com/intent/tweet?text=Check%20out%20FinceptTerminal&url=https%3A//github.com/Fincept-Corporation/FinceptTerminal/) [![LinkedIn](https://img.shields.io/badge/-LinkedIn-0077B5?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/sharing/share-offsite/?url=https%3A//github.com/Fincept-Corporation/FinceptTerminal/) [![Facebook](https://img.shields.io/badge/-Facebook-1877F2?style=flat-square&logo=facebook&logoColor=white)](https://www.facebook.com/sharer/sharer.php?u=https%3A//github.com/Fincept-Corporation/FinceptTerminal/) [![Reddit](https://img.shields.io/badge/-Reddit-FF4500?style=flat-square&logo=reddit&logoColor=white)](https://www.reddit.com/r/finceptTerminal/) [![WhatsApp](https://img.shields.io/badge/-WhatsApp-25D366?style=flat-square&logo=whatsapp&logoColor=white)](https://api.whatsapp.com/send?text=Check%20out%20FinceptTerminal%3A%20https%3A//github.com/Fincept-Corporation/FinceptTerminal/)
 
 ### **Your Thinking is the Only Limit. The Data Isn't.**
 
-State-of-the-art financial intelligence platform with CFA-level analytics, AI automation, and unlimited data connectivity.
+State-of-the-art financial intelligence platform with institutional-grade financial analytics, AI automation, and unlimited data connectivity.
 
-[📥 Download](https://github.com/Fincept-Corporation/FinceptTerminal/releases) · [📚 Docs](https://github.com/Fincept-Corporation/FinceptTerminal/tree/main/docs) · [💬 Discussions](https://github.com/Fincept-Corporation/FinceptTerminal/discussions) · [💬 Discord](https://discord.gg/ae87a8ygbN) · [🤝 Partner](https://github.com/Fincept-Corporation/FinceptTerminal/blob/main/docs/COMMERCIAL_LICENSE.md)
+[📥 Download](https://github.com/Fincept-Corporation/FinceptTerminal/releases) · [⚖️ License](https://github.com/Fincept-Corporation/FinceptTerminal/blob/main/docs/COMMERCIAL_LICENSE.md) · [💬 Discussions](https://github.com/Fincept-Corporation/FinceptTerminal/discussions) · [💬 Discord](https://discord.gg/ae87a8ygbN) · [🤝 Partner](https://github.com/Fincept-Corporation/FinceptTerminal/blob/main/docs/COMMERCIAL_LICENSE.md)
 
-![Fincept Terminal](https://raw.githubusercontent.com/Fincept-Corporation/FinceptTerminal/main/images/Dashboard.png)
+![Fincept Terminal](https://raw.githubusercontent.com/Fincept-Corporation/FinceptTerminal/main/images/FinceptBanner.png)
 
 <table>
   <tr>
@@ -41,7 +49,7 @@ State-of-the-art financial intelligence platform with CFA-level analytics, AI au
 
 | **Feature** | **Description** |
 |-------------|-----------------|
-| 📊 **CFA-Level Analytics** | DCF models, portfolio optimization, risk metrics (VaR, Sharpe), derivatives pricing via embedded Python |
+| 📊 **Multi-Asset Analytics** | DCF models, portfolio optimization, risk metrics (VaR, Sharpe), derivatives pricing across equity, fixed income, derivatives, portfolio, and alternatives via embedded Python |
 | 🤖 **AI Agents** | 37 agents across Trader/Investor (Buffett, Graham, Lynch, Munger, Klarman, Marks…), Economic, and Geopolitics frameworks; local LLM support; multi-provider (OpenAI, Anthropic, Gemini, Groq, DeepSeek, MiniMax, OpenRouter, Ollama) |
 | 🌐 **100+ Data Connectors** | DBnomics, Polygon, Kraken, Yahoo Finance, FRED, IMF, World Bank, AkShare, government APIs, plus optional alternative-data overlays such as Adanos market sentiment for equity research |
 | 📈 **Real-Time Trading** | Crypto (Kraken/HyperLiquid WebSocket), equity, algo trading, paper trading engine, 16 broker integrations (Zerodha, Angel One, Upstox, Fyers, Dhan, Groww, Kotak, IIFL, 5paisa, AliceBlue, Shoonya, Motilal, IBKR, Alpaca, Tradier, Saxo) |
@@ -61,9 +69,9 @@ Latest release: **v4.0.2** — [View all releases](https://github.com/Fincept-Co
 
 | Platform | Download | Run |
 |----------|----------|-----|
-| **Windows x64** | [FinceptTerminal-Windows-x64-setup.exe](https://github.com/Fincept-Corporation/FinceptTerminal/releases/download/v4.0.2/FinceptTerminal-4.0.2-win64-setup.exe) | Run installer → launch `FinceptTerminal.exe` |
+| **Windows x64** | [FinceptTerminal-Windows-x64-setup.exe](https://github.com/Fincept-Corporation/FinceptTerminal/releases/download/v4.0.2/FinceptTerminal-4.0.2-windows-x64-setup.exe) | Run installer → launch `FinceptTerminal.exe` |
 | **Linux x64** | [FinceptTerminal-Linux-x64.run](https://github.com/Fincept-Corporation/FinceptTerminal/releases/download/v4.0.2/FinceptTerminal-4.0.2-linux-x64-setup.run) | `chmod +x` → run installer |
-| **macOS Apple Silicon** | [FinceptTerminal-macOS-arm64.dmg](https://github.com/Fincept-Corporation/FinceptTerminal/releases/download/v4.0.2/FinceptTerminal-4.0.2-macOS-setup.dmg) | Open DMG → drag to Applications |
+| **macOS Apple Silicon** | [FinceptTerminal-macOS-arm64.dmg](https://github.com/Fincept-Corporation/FinceptTerminal/releases/download/v4.0.2/FinceptTerminal-4.0.2-macos-arm64-setup.dmg) | Open DMG → drag to Applications |
 <!-- DOWNLOAD-TABLE-END -->
 
 ---
@@ -79,33 +87,25 @@ cd FinceptTerminal
 chmod +x setup.sh && ./setup.sh
 ```
 
-```bat
-# Windows — run from Developer Command Prompt for VS 2022
-git clone https://github.com/Fincept-Corporation/FinceptTerminal.git
-cd FinceptTerminal
-setup.bat
-```
-
 The script handles: compiler check, CMake, Qt6, Python, build, and launch.
+
+> **Windows:** No setup script — use the manual build steps in Option 4 below. It's just two commands.
 
 ---
 
-### Option 3 — Docker
+### Option 3 — Docker (CI / Developer Environments)
+
+> **Note:** Docker is intended for CI/CD testing and development environments only.
+> For the best experience, use the pre-built installers in **Option 1** above.
+> Docker requires Linux with X11. Windows and macOS are not supported.
 
 ```bash
-# Pull and run
-docker pull ghcr.io/fincept-corporation/fincept-terminal:latest
-docker run --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
-    ghcr.io/fincept-corporation/fincept-terminal:latest
-
-# Or build from source
+# Build from source (Linux + X11 required)
 git clone https://github.com/Fincept-Corporation/FinceptTerminal.git
 cd FinceptTerminal
 docker build -t fincept-terminal .
 docker run --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix fincept-terminal
 ```
-
-> **Note:** Docker is primarily intended for Linux. macOS and Windows require additional XServer configuration.
 
 ---
 
@@ -138,33 +138,47 @@ docker run --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix fincept-ter
 ```bash
 git clone https://github.com/Fincept-Corporation/FinceptTerminal.git
 cd FinceptTerminal/fincept-qt
-
-# Configure + build (pick your platform)
-cmake --preset win-release     && cmake --build --preset win-release      # Windows (Dev Cmd for VS 2022)
-cmake --preset linux-release   && cmake --build --preset linux-release    # Linux
-cmake --preset macos-release   && cmake --build --preset macos-release    # macOS
 ```
 
-Debug variants: `win-debug`, `linux-debug`, `macos-debug`.
+**Step 1 — Configure** (one-time, or after `CMakeLists.txt` changes):
+```powershell
+cmake --preset win-release      # Windows (PowerShell)
+cmake --preset linux-release    # Linux
+cmake --preset macos-release    # macOS
+```
+
+**Step 2 — Compile** (run this for every code change):
+```powershell
+cmake --build --preset win-release      # Windows
+cmake --build --preset linux-release    # Linux
+cmake --build --preset macos-release    # macOS
+```
+
+Debug variants: replace `release` with `debug` (e.g. `win-debug`, `linux-debug`, `macos-debug`).
+
+> **Windows prerequisite:** The PowerShell profile at `~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1`
+> auto-initializes VS 2022 on every new terminal — open a fresh PowerShell and cmake works directly.
 
 #### Build (manual — if presets can't resolve your Qt path)
 
-```bash
-# Windows (Developer Command Prompt for VS 2022)
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+```powershell
+# Windows (PowerShell)
+cmake -B build/win-release -G Ninja -DCMAKE_BUILD_TYPE=Release `
   -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64"
-cmake --build build
+cmake --build build/win-release
+```
 
+```bash
 # Linux
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+cmake -B build/linux-release -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$HOME/Qt/6.8.3/gcc_64"
-cmake --build build
+cmake --build build/linux-release
 
 # macOS
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+cmake -B build/macos-release -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
   -DCMAKE_PREFIX_PATH="$HOME/Qt/6.8.3/macos"
-cmake --build build
+cmake --build build/macos-release
 ```
 
 #### Run
@@ -191,7 +205,7 @@ Recent builds also support optional **Adanos Market Sentiment** connectivity in 
 
 - **Native performance** — C++20 with Qt6, no Electron/web overhead
 - **Single binary** — no Node.js, no browser runtime, no JavaScript bundler
-- **CFA-level analytics** — complete curriculum coverage via Python modules
+- **Full buy-side analyst toolkit** — equity, portfolio, derivatives, fixed income, corporate finance, alternatives
 - **100+ data connectors** — from Yahoo Finance to government databases
 - **Free & Open Source** (AGPL-3.0) with commercial licenses available
 
@@ -222,6 +236,30 @@ We're building the future of financial analysis — together.
 
 ---
 
+## Support the Project
+
+We've built a community token on pump.fun as a way for early believers to stand alongside Fincept Terminal's journey — from where it is today to where we're taking it.
+
+**Fincept Terminal is being built for the long haul.** We're committed to making it the go-to financial intelligence platform, and this token is a way for the community to be part of that story from the ground up.
+
+- **pump.fun:** [View Token](https://pump.fun/coin/9LUqJ5aQTjQiUCL93gi33LZcscUoSBJNhVCYpPzEpump)
+- **Solana Mint Address:** `84zrRRB7eqF3G2zhsGsD7zk922kZw3LacxhjkSHZJXwK`
+
+**What this token is:**
+- A signal of belief in Fincept Terminal's long-term vision
+- A way to be part of the community at the earliest stage
+- Planned for integration into the Fincept Terminal ecosystem as the product grows
+
+**What this token is not (today):**
+- It currently carries no in-product utility, governance rights, or revenue share
+- It is not an investment contract, and no returns are promised or implied
+
+We're thinking long-term — and we hope you are too. That said, please only participate with funds you can genuinely afford to lose. Crypto markets are volatile, and Fincept Corporation assumes no responsibility for any gains or losses from buying, selling, or holding this token.
+
+**If you believe in what we're building, holding is how you show it.**
+
+---
+
 ## For Universities & Educators
 
 **Bring professional-grade financial analytics to your classroom.**
@@ -229,7 +267,7 @@ We're building the future of financial analysis — together.
 - **$799/month** for 20 accounts
 - Full access to Fincept Data & APIs
 - Perfect for finance, economics, and data science courses
-- CFA curriculum analytics built-in
+- Equity, portfolio, derivatives, fixed income, and economics analytics built-in
 
 **Interested?** Email **support@fincept.in** with your institution name.
 
@@ -239,22 +277,25 @@ We're building the future of financial analysis — together.
 
 ## License
 
-**Dual Licensed: AGPL-3.0 (Open Source) + Commercial**
+> ⚠️ **Cloning, forking, or modifying this repository does NOT grant commercial rights.**
+> A paid Commercial License is required for **any** business or internal company use — including forks that remove or replace Fincept's APIs with your own data sources. See **[Commercial License](https://github.com/Fincept-Corporation/FinceptTerminal/blob/main/docs/COMMERCIAL_LICENSE.md)** for binding terms.
 
-### Open Source (AGPL-3.0)
-- Free for personal, educational, and non-commercial use
-- Requires sharing modifications when distributed or used as network service
-- Full source code transparency
+**Dual Licensed: AGPL-3.0 (Open Source) + Fincept Commercial License**
 
-### Commercial License
-- Required for business use or to access Fincept Data/APIs commercially
-- Contact: **support@fincept.in**
-- Details: [Commercial License Guide](https://github.com/Fincept-Corporation/FinceptTerminal/blob/main/docs/COMMERCIAL_LICENSE.md)
+| | |
+|---|---|
+| ✅ **Free under AGPL-3.0** | Personal use · Individual learning · Academic research · Open-source contributions to this repository |
+| ❌ **Commercial License required** | Any business use (paid or free) · Internal company use · Startups at any stage · Hedge funds, brokerages, banks, fintechs · SaaS / hosted offerings · White-label or reselling · Forks that strip or replace Fincept APIs · Consulting deliverables · Employee training or evaluation by for-profit entities |
 
-### Trademarks
-"Fincept Terminal" and "Fincept" are trademarks of Fincept Corporation.
+The license attaches to the **codebase and any Derivative Work of it**, not to specific API integrations. Substituting Fincept APIs with your own — or with any third party's — does not sever or extinguish the licensing obligation. **These terms apply to every version, branch, tag, and commit of Fincept Terminal — past, present, and future** — and remain in force indefinitely until superseded by a subsequent published version.
 
-© 2025-2026 Fincept Corporation. All rights reserved.
+**Trademarks.** "Fincept", "Fincept Terminal", and the Fincept logo are trademarks of Fincept Corporation. Use in any forked, derivative, rebranded, or commercial product requires prior written permission. Removal or rebranding of these marks in a fork does not extinguish the underlying licensing obligation.
+
+**Enforcement & Penalties.** Fincept Corporation actively monitors public repositories, app stores, cloud marketplaces, and SaaS platforms for unlicensed Commercial Use, and pursues DMCA takedowns, cease-and-desist notices, and civil action under Indian and international law. Unauthorized commercial use is subject to **liquidated damages starting at USD 50,000 per organization per year**, with higher amounts for unauthorized SaaS distribution, fork-and-replace deployments, and trademark misuse — in addition to backdated license fees, disgorgement of profits, and recovery of legal costs. **Joint and several liability** applies: any company that engages a third-party developer, integrator, or consultancy to build, modify, or deploy the Software is fully liable alongside that developer for any unauthorized use. Governing law: India · Exclusive jurisdiction: Delhi, India.
+
+**Contact for licensing:** support@fincept.in · Full terms: [docs/COMMERCIAL_LICENSE.md](https://github.com/Fincept-Corporation/FinceptTerminal/blob/main/docs/COMMERCIAL_LICENSE.md)
+
+© 2025–2026 Fincept Corporation. All rights reserved.
 
 ---
 
@@ -271,6 +312,8 @@ We're building the future of financial analysis — together.
  </picture>
 </a>
 </div>
+
+[![Repobeats](https://repobeats.axiom.co/api/embed/fincept-corporation-finceptterminal.svg "Repobeats analytics image")](https://repobeats.axiom.co)
 
 [![Email](https://img.shields.io/badge/Email-support@fincept.in-blue)](mailto:support@fincept.in)
 

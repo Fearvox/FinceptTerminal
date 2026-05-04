@@ -28,7 +28,10 @@
 namespace fincept::screens {
 
 PropertiesPanel::PropertiesPanel(QWidget* parent) : QWidget(parent) {
-    setFixedWidth(280);
+    // Use min/max width pair (not setFixedWidth) so the parent splitter can
+    // drive resize and the collapse animation can drive maximumWidth → 0.
+    setMinimumWidth(0);
+    setMaximumWidth(280);
     setStyleSheet(QString("background: %1; border-left: 1px solid %2;").arg(ui::colors::PANEL(), ui::colors::BORDER()));
 
     auto* vl = new QVBoxLayout(this);
@@ -181,7 +184,7 @@ void PropertiesPanel::show_properties(const ReportComponent* component, int inde
         editor_layout_->addWidget(cell_table);
 
         // Save cell data when any cell changes
-        auto save_cells = [this, cell_table, rows_spin, cols_spin]() {
+        auto save_cells = [this, cell_table]() {
             QJsonObject obj;
             for (int r = 0; r < cell_table->rowCount(); ++r) {
                 for (int c = 0; c < cell_table->columnCount(); ++c) {

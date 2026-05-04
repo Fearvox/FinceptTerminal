@@ -233,11 +233,11 @@ void CommandBar::build_commands() {
          "",
          {"alpha", "competition", "leaderboard"}},
         {"polymarket",
-         "Polymarket",
-         "Prediction markets",
-         {"poly", "polymarket", "prediction"},
+         "Prediction Markets",
+         "Polymarket + Kalshi prediction markets",
+         {"poly", "polymarket", "kalshi", "prediction"},
          "",
-         {"polymarket", "prediction", "markets"}},
+         {"polymarket", "kalshi", "prediction", "markets"}},
         {"derivatives",
          "Derivatives",
          "Options and derivatives",
@@ -664,12 +664,6 @@ void CommandBar::refresh_theme() {
 // ── event filter (keyboard nav in input) ─────────────────────────────────────
 
 bool CommandBar::eventFilter(QObject* obj, QEvent* event) {
-    if (obj != input_ || event->type() != QEvent::KeyPress)
-        return QWidget::eventFilter(obj, event);
-
-    auto* ke = static_cast<QKeyEvent*>(event);
-    const int count = list_->count();
-
     // Navigation keys are handled via KeyConfigManager QActions (connected in setup_key_actions)
     return QWidget::eventFilter(obj, event);
 }

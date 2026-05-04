@@ -80,6 +80,15 @@ class PythonSetupManager : public QObject {
     QString find_requirements_file(const QString& filename) const;
 
     // Helpers
+    // Shared UV env vars applied to every uv invocation. Returns:
+    //   UV_PYTHON_INSTALL_DIR   — keep Python under our install dir
+    //   UV_CACHE_DIR            — wheels cached beside the app so reinstalls reuse them
+    //   UV_LINK_MODE=hardlink   — hardlink wheels from cache → venv (no copy) when same FS
+    //   UV_COMPILE_BYTECODE=1   — pay .pyc cost once at install, not at first import
+    //   UV_CONCURRENT_DOWNLOADS / UV_CONCURRENT_INSTALLS — bump UV's defaults
+    //   UV_HTTP_TIMEOUT=120     — tolerate slow CDN edges without failing the bulk pass
+    QStringList uv_env_extra() const;
+
     bool run_command(const QString& program, const QStringList& args, const QStringList& env_vars = {}) const;
     // Like run_command but captures stderr — used for per-package failure diagnosis.
     bool run_command_capture(const QString& program, const QStringList& args, const QStringList& env_vars,
@@ -102,7 +111,11 @@ class PythonSetupManager : public QObject {
     bool verify_packages_installed(const QString& venv_name,
                                    const QString& requirements_file) const;
 
-    static constexpr const char* kPythonVersion = "3.12";
+    // Pinned to an exact patch so `uv python install <ver>` resolves to the
+    // same build on every machine. Previously set to "3.12" which let uv pick
+    // the latest patch, producing non-reproducible installs and contributing
+    // to confusion during crash triage (see issue #215).
+    static constexpr const char* kPythonVersion = "3.12.7";
     static constexpr const char* kUvVersion = "0.7.12";
 
     // Session-lifetime caches — requirements files never change at runtime.

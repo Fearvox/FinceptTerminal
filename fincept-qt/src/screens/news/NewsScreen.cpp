@@ -1,8 +1,10 @@
 #include "screens/news/NewsScreen.h"
 
+#include "core/events/EventBus.h"
 #include "core/keys/KeyConfigManager.h"
 #include "core/logging/Logger.h"
 #include "core/session/ScreenStateManager.h"
+#include "core/symbol/SymbolDragSource.h"
 #include "screens/news/NewsCommandBar.h"
 #include "screens/news/NewsDetailPanel.h"
 #include "screens/news/NewsFeedPanel.h"
@@ -48,6 +50,15 @@ NewsScreen::NewsScreen(QWidget* parent) : QWidget(parent) {
 
     build_ui();
     connect_signals();
+
+    // Drop a symbol anywhere on the News screen to filter the feed by that
+    // ticker. Reuses the search-query pipeline so caching/highlighting stay
+    // coherent with keyword search.
+    symbol_dnd::installDropFilter(this, [this](const SymbolRef& ref, SymbolGroup) {
+        if (ref.is_valid())
+            on_search_changed(ref.symbol);
+    });
+
     LOG_INFO("NewsScreen", "News screen constructed (no data fetch in constructor)");
 }
 
@@ -158,7 +169,7 @@ void NewsScreen::connect_signals() {
         const QSet<QString> ids = std::move(pending_seen_ids_);
         pending_seen_ids_.clear();
         QPointer<NewsScreen> self = this;
-        QtConcurrent::run([ids, self]() {
+        (void)QtConcurrent::run([ids, self]() {
             for (const auto& id : ids)
                 fincept::NewsArticleRepository::instance().mark_seen(id);
             if (self) {
@@ -262,6 +273,7 @@ void NewsScreen::showEvent(QShowEvent* e) {
     pulse_timer_->start();
     services::NewsService::instance().start_auto_refresh();
     services::NewsService::instance().connect_live_feed();
+    subscribe_mcp_events();
 
     if (first_show_) {
         first_show_ = false;
@@ -294,6 +306,47 @@ void NewsScreen::hideEvent(QHideEvent* e) {
     services::NewsService::instance().stop_auto_refresh();
     services::NewsService::instance().disconnect_live_feed();
     filter_generation_.fetch_add(1, std::memory_order_relaxed);
+    unsubscribe_mcp_events();
+}
+
+// ── MCP-driven UI sync ──────────────────────────────────────────────────────
+// MCP tools (called from AI Chat / Finagent) publish events when the LLM
+// mutates news state. We subscribe while visible so the UI reflects the
+// change without the user having to manually refresh. EventBus handlers
+// can fire on a worker thread; we marshal to the screen's thread before
+// touching the model/panel.
+
+void NewsScreen::subscribe_mcp_events() {
+    if (!mcp_event_subs_.isEmpty()) return; // idempotent
+
+    QPointer<NewsScreen> self = this;
+    auto on_monitors_changed = [self](const QVariantMap&) {
+        if (!self) return;
+        QMetaObject::invokeMethod(self.data(), [self]() {
+            if (!self || !self->visible_) return;
+            self->update_monitors();
+        }, Qt::QueuedConnection);
+    };
+    auto on_refresh_requested = [self](const QVariantMap&) {
+        if (!self) return;
+        QMetaObject::invokeMethod(self.data(), [self]() {
+            if (!self || !self->visible_) return;
+            self->refresh_data(/*force=*/true);
+        }, Qt::QueuedConnection);
+    };
+
+    auto& bus = EventBus::instance();
+    mcp_event_subs_.append(bus.subscribe("news.monitor_added",   on_monitors_changed));
+    mcp_event_subs_.append(bus.subscribe("news.monitor_toggled", on_monitors_changed));
+    mcp_event_subs_.append(bus.subscribe("news.monitor_deleted", on_monitors_changed));
+    mcp_event_subs_.append(bus.subscribe("news.refresh_requested", on_refresh_requested));
+}
+
+void NewsScreen::unsubscribe_mcp_events() {
+    auto& bus = EventBus::instance();
+    for (auto id : mcp_event_subs_)
+        bus.unsubscribe(id);
+    mcp_event_subs_.clear();
 }
 
 // ── Slots ───────────────────────────────────────────────────────────────────
@@ -346,6 +399,20 @@ void NewsScreen::on_search_changed(const QString& query) {
     ScreenStateManager::instance().notify_changed(this);
     apply_filters_async();
 }
+
+void NewsScreen::on_group_symbol_changed(const SymbolRef& ref) {
+    if (!ref.is_valid())
+        return;
+    // Route through the same pipeline the search box uses so caching,
+    // highlighting, and notifications stay consistent. We don't touch
+    // the command bar's text box — the search query is the data-layer
+    // filter, which is what drives feed filtering.
+    on_search_changed(ref.symbol);
+}
+
+// Drop hook installed in the constructor below is wired via symbol_dnd —
+// see constructor edits for the installDropFilter call that forwards to
+// on_search_changed().
 
 void NewsScreen::on_refresh() {
     refresh_data(true);
@@ -503,6 +570,12 @@ void NewsScreen::refresh_data(bool force) {
                             return;
                         self->all_articles_ = std::move(articles);
                         self->command_bar_->set_loading_progress(done, total);
+                        // Hide skeleton as soon as we have any articles to render —
+                        // otherwise the overlay traps progressive partials and the
+                        // user sees a blank list until the slowest feed times out.
+                        if (!self->all_articles_.isEmpty()) {
+                            self->feed_panel_->set_loading(false);
+                        }
                         self->apply_filters_async();
                         if (done == total)
                             QObject::disconnect(*conn);
@@ -516,9 +589,13 @@ void NewsScreen::refresh_data(bool force) {
         self->feed_panel_->set_loading(false);
         if (!ok) {
             LOG_ERROR("NewsScreen", "Failed to fetch news");
+            self->feed_panel_->set_empty_state(true);
             return;
         }
         self->all_articles_ = std::move(articles);
+        // Show empty state only when literally no articles came back across
+        // every feed — otherwise apply_filters_async will populate the list.
+        self->feed_panel_->set_empty_state(self->all_articles_.isEmpty());
         self->apply_filters_async();
     });
 }
@@ -533,7 +610,6 @@ void NewsScreen::apply_filters_async() {
     const QString search_lower = search_query_.toLower();
     const QString sort = sort_mode_;
     const QString variant = active_variant_;
-    int visible_count = visible_article_count_;
 
     // For 7D / 30D ranges, merge DB history
     if (time_range == "7D" || time_range == "30D") {
@@ -562,8 +638,8 @@ void NewsScreen::apply_filters_async() {
         }
     }
 
-    QtConcurrent::run([self, gen, articles_copy = std::move(articles_copy), category, time_range, search_lower, sort,
-                       variant, visible_count]() {
+    (void)QtConcurrent::run([self, gen, articles_copy = std::move(articles_copy), category, time_range, search_lower, sort,
+                       variant]() {
         int64_t window_sec = 0;
         if (time_range == "1H")
             window_sec = 3600;
@@ -588,19 +664,32 @@ void NewsScreen::apply_filters_async() {
         QMap<QString, int> category_counts;
         int bullish = 0, bearish = 0, neutral = 0;
 
+        // Per-stage rejection counters — surface the cause when we silently
+        // filter the entire input down to zero (the single highest-impact
+        // failure mode in this pipeline).
+        int rejected_time = 0, rejected_variant = 0, rejected_category = 0, rejected_search = 0;
+
         for (const auto& a : articles_copy) {
-            if (cutoff > 0 && a.sort_ts < cutoff)
+            if (cutoff > 0 && a.sort_ts < cutoff) {
+                ++rejected_time;
                 continue;
+            }
 
             // Variant filter
             if (variant == "FINANCE" && a.category != "MARKETS" && a.category != "EARNINGS" &&
-                a.category != "ECONOMIC" && a.category != "REGULATORY")
+                a.category != "ECONOMIC" && a.category != "REGULATORY") {
+                ++rejected_variant;
                 continue;
-            if (variant == "CRYPTO" && a.category != "CRYPTO" && a.category != "TECH")
+            }
+            if (variant == "CRYPTO" && a.category != "CRYPTO" && a.category != "TECH") {
+                ++rejected_variant;
                 continue;
+            }
             if (variant == "MACRO" && a.category != "ECONOMIC" && a.category != "REGULATORY" &&
-                a.category != "GEOPOLITICS" && a.category != "ENERGY")
+                a.category != "GEOPOLITICS" && a.category != "ENERGY") {
+                ++rejected_variant;
                 continue;
+            }
 
             // Category filter
             if (category != "ALL") {
@@ -609,8 +698,10 @@ void NewsScreen::apply_filters_async() {
                     {"NRG", "ENERGY"},  {"CRPT", "CRYPTO"},   {"GEO", "GEOPOLITICS"}, {"DEF", "DEFENSE"},
                 };
                 auto it = cat_map.find(category);
-                if (it != cat_map.end() && a.category != it.value())
+                if (it != cat_map.end() && a.category != it.value()) {
+                    ++rejected_category;
                     continue;
+                }
             }
 
             // Search filter
@@ -627,8 +718,10 @@ void NewsScreen::apply_filters_async() {
                         }
                     }
                 }
-                if (!match)
+                if (!match) {
+                    ++rejected_search;
                     continue;
+                }
             }
 
             filtered.append(a);
@@ -655,6 +748,16 @@ void NewsScreen::apply_filters_async() {
         }
 
         auto clusters = services::cluster_articles(filtered);
+
+        // When the entire input is filtered to zero, surface why so the cause
+        // is visible in logs without users digging into the source.
+        if (!articles_copy.isEmpty() && filtered.isEmpty()) {
+            LOG_WARN("NewsScreen",
+                     QString("Filter rejected ALL %1 articles "
+                             "(time=%2 variant=%3 category=%4 search=%5 range=%6)")
+                         .arg(articles_copy.size()).arg(rejected_time).arg(rejected_variant)
+                         .arg(rejected_category).arg(rejected_search).arg(time_range));
+        }
 
         QMetaObject::invokeMethod(
             self,
@@ -686,6 +789,14 @@ void NewsScreen::update_ui_from_filtered(int /*generation*/, const QVector<servi
     feed_panel_->model()->set_wire_articles(visible);
     feed_panel_->model()->set_clusters(clusters);
     feed_panel_->model()->set_view_mode(view_mode_);
+
+    // Empty-state toggle: only show "no articles" when we're not still loading
+    // and the filter genuinely produced nothing. Hide it as soon as the user
+    // has any rows to look at.
+    if (!loading_)
+        feed_panel_->set_empty_state(filtered.isEmpty());
+    else if (!filtered.isEmpty())
+        feed_panel_->set_empty_state(false);
 
     // Command bar counts
     command_bar_->set_article_count(filtered.size());
@@ -922,9 +1033,13 @@ int64_t NewsScreen::time_window_seconds() const {
 // ── IStatefulScreen ─────────────────────────────────────────────────────────
 
 QVariantMap NewsScreen::save_state() const {
+    // search_query_ is intentionally NOT persisted — it's a transient
+    // typed-in filter, and restoring it would silently filter the feed
+    // on next launch (the search input widget doesn't display restored
+    // queries, so users can't see what's hiding articles).
     return {
-        {"category", active_category_}, {"time_range", time_range_},     {"sort_mode", sort_mode_},
-        {"view_mode", view_mode_},      {"search_query", search_query_}, {"variant", active_variant_},
+        {"category", active_category_}, {"time_range", time_range_}, {"sort_mode", sort_mode_},
+        {"view_mode", view_mode_},      {"variant", active_variant_},
     };
 }
 
@@ -933,7 +1048,8 @@ void NewsScreen::restore_state(const QVariantMap& state) {
     time_range_ = state.value("time_range", "24H").toString();
     sort_mode_ = state.value("sort_mode", "RELEVANCE").toString();
     view_mode_ = state.value("view_mode", "WIRE").toString();
-    search_query_ = state.value("search_query").toString();
+    // Drop any legacy "search_query" stored by an older build — see save_state().
+    search_query_.clear();
     active_variant_ = state.value("variant", "FULL").toString();
 
     if (command_bar_)

@@ -12,7 +12,7 @@
 namespace fincept::screens::polymarket {
 
 using namespace fincept::ui;
-using namespace fincept::services::polymarket;
+using namespace fincept::services::prediction;
 
 PolymarketOrderBook::PolymarketOrderBook(QWidget* parent) : QWidget(parent) {
     setMinimumHeight(200);
@@ -32,7 +32,7 @@ PolymarketOrderBook::PolymarketOrderBook(QWidget* parent) : QWidget(parent) {
     });
 }
 
-void PolymarketOrderBook::set_data(const OrderBook& book) {
+void PolymarketOrderBook::set_data(const PredictionOrderBook& book) {
     QMutexLocker lock(&mutex_);
     bids_ = book.bids;
     asks_ = book.asks;
@@ -110,18 +110,20 @@ void PolymarketOrderBook::rebuild_cache() {
     QPainter p(&cache_);
     p.setRenderHint(QPainter::Antialiasing, false);
 
-    QFont header_font(fonts::DATA_FAMILY, 9);
+    QFont header_font(fonts::DATA_FAMILY, 8);
     header_font.setWeight(QFont::Bold);
-    QFont data_font(fonts::DATA_FAMILY, 10);
+    QFont data_font(fonts::DATA_FAMILY, 9);
 
     // Header
     p.fillRect(0, 0, w, HEADER_HEIGHT, QColor(colors::BG_RAISED()));
+    p.setPen(QColor(colors::BORDER_DIM()));
+    p.drawLine(0, HEADER_HEIGHT - 1, w, HEADER_HEIGHT - 1);
     p.setFont(header_font);
     p.setPen(QColor(colors::TEXT_SECONDARY()));
     int col_w = w / 3;
-    p.drawText(4, 0, col_w, HEADER_HEIGHT, Qt::AlignLeft | Qt::AlignVCenter, "PRICE");
+    p.drawText(8, 0, col_w, HEADER_HEIGHT, Qt::AlignLeft | Qt::AlignVCenter, "PRICE");
     p.drawText(col_w, 0, col_w, HEADER_HEIGHT, Qt::AlignRight | Qt::AlignVCenter, "SIZE");
-    p.drawText(2 * col_w, 0, col_w - 4, HEADER_HEIGHT, Qt::AlignRight | Qt::AlignVCenter, "DEPTH");
+    p.drawText(2 * col_w, 0, col_w - 8, HEADER_HEIGHT, Qt::AlignRight | Qt::AlignVCenter, "TOTAL");
 
     // Separator
     p.setPen(QColor(colors::BORDER_DIM()));

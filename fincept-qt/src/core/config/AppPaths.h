@@ -6,7 +6,7 @@ namespace fincept {
 /// Central registry for all application file-system paths.
 ///
 /// All paths live under a single root directory:
-///   Windows : %LOCALAPPDATA%\com.fincept.terminal\
+///   Windows : %LOCALAPPDATA%/com.fincept.terminal/
 ///   macOS   : ~/Library/Application Support/com.fincept.terminal/
 ///   Linux   : ~/.local/share/com.fincept.terminal/
 ///
@@ -44,6 +44,9 @@ class AppPaths {
 
     /// root/workspaces — saved workspace files (.fwsp)
     static QString workspaces();
+
+    /// root/crashdumps — minidumps written by the unhandled-exception filter
+    static QString crashdumps();
 
     /// Create all sub-directories if they don't exist.
     /// Call once before any path is used.

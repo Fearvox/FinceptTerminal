@@ -1,5 +1,38 @@
 cmake_minimum_required(VERSION 3.27)
-project(FinceptTerminal VERSION 4.0.2 LANGUAGES CXX)
+
+# ── RC compiler override (clang-cl + Windows only) ───────────────────────────
+# When building with clang-cl, CMake's Windows-Clang module auto-enables the
+# two-step `cmake -E cmake_llvm_rc` wrapper: preprocess the .rc with clang-cl
+# then pipe to rc.exe. That wrapper inherits incompatible C flags (-MD, -FS,
+# /showIncludes) and fails silently with exit 1 on Windows SDK rc.exe. Our
+# app.rc is a trivial ICON declaration with no macros or #includes, so we
+# bypass the wrapper and use rc.exe directly. Tracked as CMake issue #20198.
+# Must run before project() so CMAKE_RC_COMPILER is set before RC language init.
+if(WIN32 AND CMAKE_HOST_WIN32)
+    # Heuristic: if CC/CXX env vars point to clang-cl, or the generator is likely
+    # to pick up clang-cl from PATH, force MSVC rc.exe. Harmless on pure MSVC too.
+    find_program(_fincept_rc_exe NAMES rc rc.exe
+        HINTS
+            "$ENV{WindowsSdkVerBinPath}x64"
+            "$ENV{WindowsSdkDir}bin/$ENV{WindowsSDKVersion}x64"
+            "C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64"
+            "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64")
+    if(_fincept_rc_exe)
+        set(CMAKE_RC_COMPILER "${_fincept_rc_exe}" CACHE FILEPATH "Windows resource compiler" FORCE)
+        set(CMAKE_RC_COMPILER_INIT "${_fincept_rc_exe}")
+    endif()
+endif()
+
+project(FinceptTerminal VERSION 4.0.2 LANGUAGES C CXX)
+
+# Strip C/C++ flags out of RC invocations — rc.exe only understands /D, /I, /fo.
+if(WIN32)
+    set(CMAKE_RC_FLAGS "/nologo" CACHE STRING "" FORCE)
+    set(CMAKE_RC_FLAGS_RELEASE "" CACHE STRING "" FORCE)
+    set(CMAKE_RC_FLAGS_DEBUG "" CACHE STRING "" FORCE)
+    set(CMAKE_RC_FLAGS_RELWITHDEBINFO "" CACHE STRING "" FORCE)
+    set(CMAKE_RC_FLAGS_MINSIZEREL "" CACHE STRING "" FORCE)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,11 +65,66 @@ endif()
 # ── Compiler cache (ccache / sccache) ────────────────────────────────────────
 # Detected at configure time. If present, routes every C/C++ compilation
 # through the cache. Cuts clean rebuilds by 5-20x when source hasn't changed.
+#
+# PCH SUPPORT — without this, ccache rejects 99% of calls with
+# "Could not use precompiled header" because MSVC-style PCH files include
+# a serialised path that defeats the cache key. The sloppiness flags +
+# CCACHE_PCH_EXTSUM tell ccache to hash the PCH's contents instead of its
+# path. This must be set both at configure time (when CMake records the
+# launcher script) and at build time (when the launcher actually runs),
+# so we wrap ccache in a CMake-generated script that exports the env vars
+# unconditionally.
 find_program(FINCEPT_CCACHE_PROGRAM NAMES ccache sccache)
 if(FINCEPT_CCACHE_PROGRAM)
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${FINCEPT_CCACHE_PROGRAM}")
-    set(CMAKE_C_COMPILER_LAUNCHER   "${FINCEPT_CCACHE_PROGRAM}")
-    message(STATUS "Compiler cache enabled: ${FINCEPT_CCACHE_PROGRAM}")
+    # Expose the same env vars to interactive `ccache -s` runs by writing a
+    # ccache.conf in the cache dir. This is idempotent — ccache reads it on
+    # every invocation, so changes here propagate without a clean rebuild.
+    if(WIN32)
+        set(_fincept_ccache_dir "$ENV{LOCALAPPDATA}/ccache")
+    elseif(APPLE)
+        set(_fincept_ccache_dir "$ENV{HOME}/Library/Caches/ccache")
+    else()
+        set(_fincept_ccache_dir "$ENV{HOME}/.ccache")
+    endif()
+    if(_fincept_ccache_dir AND IS_DIRECTORY "${_fincept_ccache_dir}")
+        # ccache.conf format: KEY = VALUE per line. We write only the keys we
+        # need; ccache merges with defaults for everything else.
+        file(WRITE "${_fincept_ccache_dir}/ccache.conf"
+            "sloppiness = pch_defines,time_macros,include_file_mtime,include_file_ctime,locale\n"
+            "pch_external_checksum = true\n"
+            "depend_mode = true\n"
+            "compiler_check = content\n"
+            "max_size = 5G\n")
+        message(STATUS "Wrote ccache config to ${_fincept_ccache_dir}/ccache.conf")
+    endif()
+
+    # Wrap ccache in a launcher script that exports the env vars unconditionally
+    # — belt-and-braces in case ccache.conf isn't picked up (e.g. when the user
+    # has CCACHE_DIR set to a non-default location).
+    if(WIN32)
+        set(_fincept_ccache_launcher "${CMAKE_BINARY_DIR}/ccache_launcher.cmd")
+        file(WRITE "${_fincept_ccache_launcher}"
+            "@echo off\r\n"
+            "set CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime,locale\r\n"
+            "set CCACHE_PCH_EXTSUM=true\r\n"
+            "set CCACHE_DEPEND=1\r\n"
+            "set CCACHE_COMPILERCHECK=content\r\n"
+            "\"${FINCEPT_CCACHE_PROGRAM}\" %*\r\n")
+    else()
+        set(_fincept_ccache_launcher "${CMAKE_BINARY_DIR}/ccache_launcher.sh")
+        file(WRITE "${_fincept_ccache_launcher}"
+            "#!/bin/sh\n"
+            "export CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime,locale\n"
+            "export CCACHE_PCH_EXTSUM=true\n"
+            "export CCACHE_DEPEND=1\n"
+            "export CCACHE_COMPILERCHECK=content\n"
+            "exec \"${FINCEPT_CCACHE_PROGRAM}\" \"$@\"\n")
+        execute_process(COMMAND chmod +x "${_fincept_ccache_launcher}")
+    endif()
+
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${_fincept_ccache_launcher}")
+    set(CMAKE_C_COMPILER_LAUNCHER   "${_fincept_ccache_launcher}")
+    message(STATUS "Compiler cache enabled: ${FINCEPT_CCACHE_PROGRAM} (PCH-aware launcher)")
 endif()
 
 # ── macOS rpath configuration ────────────────────────────────────────────────
@@ -44,10 +132,18 @@ endif()
 # Without this, CMake embeds build-tree rpaths (e.g. _deps/qgeoview-build/lib)
 # and CPack IFW fails trying to delete them after macdeployqt already rewrote them.
 if(APPLE)
+    # If not explicitly provided by the caller/preset, pin the minimum
+    # supported macOS version so builds on newer runners do not accidentally
+    # produce bundles that require that newer host OS at runtime.
+    if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET OR CMAKE_OSX_DEPLOYMENT_TARGET STREQUAL "")
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
+            "Minimum macOS version supported by Fincept Terminal" FORCE)
+    endif()
     set(CMAKE_MACOSX_RPATH ON)
     set(CMAKE_INSTALL_RPATH "@executable_path/../Frameworks;@executable_path/../lib")
     set(CMAKE_BUILD_WITH_INSTALL_RPATH OFF)
     set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
+    message(STATUS "macOS deployment target: ${CMAKE_OSX_DEPLOYMENT_TARGET}")
 endif()
 
 # Export compile_commands.json for clang-tidy
@@ -69,19 +165,34 @@ set(CMAKE_UNITY_BUILD_BATCH_SIZE 14)
 # https://cmake.org/cmake/help/latest/module/FetchContent.html#variable:FETCHCONTENT_UPDATES_DISCONNECTED
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Skip FetchContent update step after initial download")
 
+# ── LTO (whole-program optimisation) ─────────────────────────────────────────
+# /GL + /LTCG produce the smallest, fastest binary but make every incremental
+# link a full whole-program rebuild over 400+ object files — easily 30-90s per
+# link on a developer machine. Default OFF so daily iteration is fast; CI and
+# explicit release builds opt in.
+option(FINCEPT_ENABLE_LTO
+    "Enable MSVC /GL + /LTCG and equivalent on GCC/Clang (slow link, smaller/faster binary)"
+    OFF)
+if(DEFINED ENV{CI})
+    set(FINCEPT_ENABLE_LTO ON CACHE BOOL "" FORCE)
+endif()
+
 # MSVC compiler flags for maximum build throughput:
-#   /MP        — multi-processor compilation (uses all logical cores within one project)
-#   /Z7        — embed debug info in .obj instead of shared PDB → no PDB write contention
-#                that serialises /MP builds (major speedup on 16+ core machines)
+#   /Z7        — embed debug info in .obj instead of shared PDB → no PDB write
+#                contention (major speedup with parallel compilation)
 #   /Oi        — enable intrinsics (faster codegen, no extra passes)
 #   /bigobj    — allow >65535 sections (needed by large unity TUs and MOC output)
-#   /d2FuncCache7 — MSVC internal: increase function-level cache for template-heavy code
+#
+# /MP is intentionally NOT set: Ninja already parallelises at the cl.exe level
+# (one cl.exe per TU, capped at host CPU count). Adding /MP makes each cl.exe
+# fork N more workers, oversubscribing the box and *slowing* builds. /MP is
+# only useful under MSBuild, which parallelises by project not by TU.
 if(MSVC)
     # /permissive- : enforces ISO C++ conformance — catches MS-specific non-portable
     #                code that would break on GCC/Clang (two-phase lookup, etc.)
     # /W4          : level-4 warnings (highest practical without /Wall noise)
     # /WX only in CI so local iteration isn't blocked by new warnings
-    add_compile_options(/MP /Z7 /Oi /bigobj /permissive- /W4)
+    add_compile_options(/Z7 /Oi /bigobj /permissive- /W4)
     if(DEFINED ENV{CI})
         add_compile_options(/WX)
     endif()
@@ -92,13 +203,31 @@ if(MSVC)
         string(REPLACE "/Zi" "/Z7" ${flag_var} "${${flag_var}}")
         string(REPLACE "/ZI" "/Z7" ${flag_var} "${${flag_var}}")
     endforeach()
-    # Release: enable whole-program optimisation + link-time code generation.
-    # /GL compiles to IL; /LTCG merges at link time for cross-TU inlining & DCE.
-    # Only for Release — Debug/RelWithDebInfo stay fast for iteration.
-    if(CMAKE_BUILD_TYPE STREQUAL "Release" OR
-       (DEFINED CMAKE_CONFIGURATION_TYPES AND "Release" IN_LIST CMAKE_CONFIGURATION_TYPES))
+
+    # Whole-program optimisation. /GL marks each .obj as IL; /LTCG merges at
+    # link time. Both required together — using one without the other warns
+    # and silently disables. Gated behind FINCEPT_ENABLE_LTO so incremental
+    # dev links stay fast (incremental linking is incompatible with /LTCG).
+    if(FINCEPT_ENABLE_LTO)
         add_compile_options($<$<CONFIG:Release>:/GL>)
         add_link_options($<$<CONFIG:Release>:/LTCG:incremental>)
+    else()
+        # /INCREMENTAL with debug info needs /DEBUG to emit a usable PDB even
+        # though we use /Z7 (objects carry debug). Keep linker incremental for
+        # fast Release-mode iteration. CMake's default Release link flags set
+        # /INCREMENTAL:NO; override here.
+        add_link_options($<$<CONFIG:Release>:/INCREMENTAL>)
+        add_link_options($<$<CONFIG:RelWithDebInfo>:/INCREMENTAL>)
+        # Replace any /INCREMENTAL:NO that CMake's defaults inserted.
+        foreach(flag_var
+                CMAKE_EXE_LINKER_FLAGS_RELEASE
+                CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO
+                CMAKE_SHARED_LINKER_FLAGS_RELEASE
+                CMAKE_SHARED_LINKER_FLAGS_RELWITHDEBINFO
+                CMAKE_MODULE_LINKER_FLAGS_RELEASE
+                CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO)
+            string(REPLACE "/INCREMENTAL:NO" "/INCREMENTAL" ${flag_var} "${${flag_var}}")
+        endforeach()
     endif()
 endif()
 
@@ -175,6 +304,22 @@ if(Qt6TextToSpeech_FOUND)
     set(HAS_TTS TRUE)
 endif()
 
+# macOS 14+ / Xcode 15+ removes the AGL framework. Qt6's WrapOpenGL target (pulled in
+# by Qt6::Gui) hardcodes a fallback to `-framework AGL` if it isn't found on the system.
+# We strip it from the INTERFACE_LINK_LIBRARIES to prevent `ld: framework 'AGL' not found`.
+if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
+    get_target_property(_gl_libs WrapOpenGL::WrapOpenGL INTERFACE_LINK_LIBRARIES)
+    if(_gl_libs)
+        set(_new_gl_libs "")
+        foreach(_lib IN LISTS _gl_libs)
+            if(NOT _lib MATCHES "AGL")
+                list(APPEND _new_gl_libs "${_lib}")
+            endif()
+        endforeach()
+        set_target_properties(WrapOpenGL::WrapOpenGL PROPERTIES INTERFACE_LINK_LIBRARIES "${_new_gl_libs}")
+    endif()
+endif()
+
 # ── FetchContent dependencies ─────────────────────────────────────────────────
 # Guard: prevent all FetchContent subdirectories from registering install()
 # rules that would pollute CPack and cause "file not found" errors on packaging.
@@ -230,15 +375,21 @@ if(FINCEPT_HAS_PRIVATE_HEADERS)
 
     # QXlsx uses implicit const char* -> QString conversions which are banned
     # by Qt6's strict cast macros. Undefine them for this target only.
+    # Also silence upstream warnings so CI's -Werror doesn't fail on third-party
+    # code. /WX- is critical on MSVC: /W0 suppresses warnings but does NOT
+    # disable the directory-inherited /WX (warnings-as-errors) that promotes
+    # any surviving warning to a build-breaking error.
     if(MSVC)
         target_compile_options(QXlsx PRIVATE
             /UQT_NO_CAST_FROM_ASCII /UQT_NO_CAST_FROM_BYTEARRAY
             /UQT_NO_CAST_TO_ASCII   /UQT_NO_URL_CAST_FROM_STRING
+            /W0 /WX-
         )
     else()
         target_compile_options(QXlsx PRIVATE
             -UQT_NO_CAST_FROM_ASCII -UQT_NO_CAST_FROM_BYTEARRAY
             -UQT_NO_CAST_TO_ASCII   -UQT_NO_URL_CAST_FROM_STRING
+            -w -Wno-error
         )
     endif()
 else()
@@ -268,6 +419,18 @@ set_target_properties(md4c PROPERTIES UNITY_BUILD OFF)
 if(TARGET md4c-html)
     set_target_properties(md4c-html PROPERTIES UNITY_BUILD OFF)
 endif()
+# Silence upstream warnings so CI's -Werror doesn't fail on third-party code.
+# /WX- / -Wno-error needed in addition to /W0 / -w because CI adds -Werror (/WX)
+# at the directory level, which suppression flags alone don't override.
+foreach(_md4c_tgt md4c md4c-html md2html)
+    if(TARGET ${_md4c_tgt})
+        if(MSVC)
+            target_compile_options(${_md4c_tgt} PRIVATE /W0 /WX-)
+        else()
+            target_compile_options(${_md4c_tgt} PRIVATE -w -Wno-error)
+        endif()
+    endif()
+endforeach()
 # md4c's src/CMakeLists.txt installs from ${CMAKE_BINARY_DIR}/src/md4c.pc but
 # configure_file() writes to ${CMAKE_CURRENT_BINARY_DIR}/md4c.pc (the subbuild
 # dir). On CI these are different paths, causing CPack's "file INSTALL cannot
@@ -303,11 +466,16 @@ set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(QGeoView)
 # QGeoView has anonymous-namespace symbol clashes under unity build
 set_target_properties(qgeoview PROPERTIES UNITY_BUILD OFF)
+# Silence upstream warnings so CI's -Werror doesn't fail on third-party code.
+if(MSVC)
+    target_compile_options(qgeoview PRIVATE /W0 /WX-)
+else()
+    target_compile_options(qgeoview PRIVATE -w -Wno-error)
+endif()
 
-# Qt 6.8.3's QtGui on macOS carries a transitive "-framework AGL" in its link
-# interface. Apple removed AGL in macOS 14 (Sonoma), so the link fails on 14+
-# with: ld: framework 'AGL' not found. Scrub AGL from qgeoview's resolved link
-# libraries on Apple — OpenGL framework (also in Qt's interface) is sufficient.
+# Qt 6.8.3's FindWrapOpenGL.cmake adds "-framework AGL" which was removed in
+# macOS 14 (Sonoma). The patch in setup.sh fixes this at the Qt install level.
+# As a safety net, scrub AGL from qgeoview's resolved link libraries too.
 # See GitHub issue #140.
 if(APPLE)
     foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
@@ -334,8 +502,22 @@ FetchContent_Declare(
     UPDATE_DISCONNECTED TRUE
 )
 FetchContent_MakeAvailable(SingleApplication)
+# ── Patch SingleApplication for Qt 6.8 QSharedMemory compat ────────────────────
+# Qt 6.8 changed the default QSharedMemory backend to PosixRealtime, but macOS's
+# shm_open rejects the keys that SingleApplication generates ("bad name").
+# Fix: use SystemV type which works on macOS (and Linux) with Qt 6.6+.
+if(UNIX)
+    file(READ ${SingleApplication_SOURCE_DIR}/singleapplication.cpp _sa_src)
+    string(REPLACE
+        "d->memory = new QSharedMemory( QNativeIpcKey( d->blockServerName ) );"
+        "d->memory = new QSharedMemory(); d->memory->setNativeKey(d->blockServerName, QNativeIpcKey::Type::SystemV);"
+        _sa_src "${_sa_src}")
+    file(WRITE ${SingleApplication_SOURCE_DIR}/singleapplication.cpp "${_sa_src}")
+endif()
 if(MSVC)
-    target_compile_options(SingleApplication PRIVATE /W0)
+    target_compile_options(SingleApplication PRIVATE /W0 /WX-)
+else()
+    target_compile_options(SingleApplication PRIVATE -w -Wno-error)
 endif()
 
 # ── Qt Advanced Docking System (detachable panels) ───────────────────────────
@@ -358,22 +540,79 @@ set_target_properties(qtadvanceddocking-qt6 PROPERTIES UNITY_BUILD OFF)
 
 # Restore install rules for the main application targets
 set(CMAKE_SKIP_INSTALL_RULES FALSE CACHE BOOL "" FORCE)
+# Third-party code: silence warnings so CI's -Werror doesn't turn a benign
+# upstream warning (e.g. -Wunused-but-set-variable on Clang) into a build failure.
 if(MSVC)
-    target_compile_options(qtadvanceddocking-qt6 PRIVATE /W0)
+    target_compile_options(qtadvanceddocking-qt6 PRIVATE /W0 /WX-)
+else()
+    target_compile_options(qtadvanceddocking-qt6 PRIVATE -w -Wno-error)
 endif()
+
+# ── ed25519 (orlp/ed25519) ───────────────────────────────────────────────────
+# Public-domain Ed25519 reference implementation. We only use ed25519_verify
+# in WalletService (signed-message challenge for Solana wallet connect).
+# Upstream has no CMakeLists, so we build the .c files into a small static lib.
+set(CMAKE_SKIP_INSTALL_RULES TRUE CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    ed25519
+    GIT_REPOSITORY https://github.com/orlp/ed25519.git
+    GIT_TAG        b1f19fab4aebe607805620d25a5e42566ce46a0e  # master @ 2026-04-27
+    GIT_SHALLOW    TRUE
+    UPDATE_DISCONNECTED TRUE
+)
+FetchContent_MakeAvailable(ed25519)
+file(GLOB FINCEPT_ED25519_SRC "${ed25519_SOURCE_DIR}/src/*.c")
+add_library(fincept_ed25519 STATIC ${FINCEPT_ED25519_SRC})
+target_include_directories(fincept_ed25519 PUBLIC "${ed25519_SOURCE_DIR}/src")
+set_target_properties(fincept_ed25519 PROPERTIES
+    UNITY_BUILD OFF
+    POSITION_INDEPENDENT_CODE ON
+    C_STANDARD 99
+)
+if(MSVC)
+    target_compile_options(fincept_ed25519 PRIVATE /W0 /WX-)
+else()
+    target_compile_options(fincept_ed25519 PRIVATE -w -Wno-error)
+endif()
+set(CMAKE_SKIP_INSTALL_RULES FALSE CACHE BOOL "" FORCE)
 
 # ── Source files by module ────────────────────────────────────────────────────
 
 # Core
 set(CORE_SOURCES
+    src/core/actions/ActionRegistry.cpp
+    src/core/actions/builtin_actions.cpp
     src/core/config/AppConfig.cpp
     src/core/config/AppPaths.cpp
     src/core/config/ProfileManager.cpp
     src/core/logging/Logger.cpp
     src/core/events/EventBus.cpp
+    src/core/layout/LayoutTypes.cpp
+    src/core/layout/LayoutCatalog.cpp
+    src/core/layout/WorkspaceMatcher.cpp
+    src/core/layout/WorkspaceShell.cpp
+    src/core/panel/PanelHandle.cpp
+    src/core/panel/PanelMaterialiser.cpp
+    src/core/panel/PanelRegistry.cpp
+    src/core/profile/ProfilePaths.cpp
+    src/core/screen/MonitorTopology.cpp
+    src/core/screen/MonitorWatcher.cpp
+    src/core/telemetry/TelemetryProvider.cpp
+    src/core/telemetry/LocalTelemetrySink.cpp
+    src/core/debug/StressLoad.cpp
     src/core/session/SessionManager.cpp
     src/core/session/ScreenStateManager.cpp
     src/core/keys/KeyConfigManager.cpp
+    src/core/keys/WindowCycler.cpp
+    src/core/net/NetSpeedMeter.cpp
+    src/core/symbol/SymbolContext.cpp
+    src/core/symbol/SymbolGroupRegistry.cpp
+    src/core/symbol/SymbolMime.cpp
+    src/core/symbol/SymbolDragSource.cpp
+    src/core/components/ComponentCatalog.cpp
+    src/core/components/PopularityTracker.cpp
+    src/core/crash/CrashHandler.cpp
+    src/core/window/WindowRegistry.cpp
 )
 
 # Network
@@ -399,6 +638,8 @@ set(AUTH_SOURCES
     src/auth/SessionGuard.cpp
     src/auth/PinManager.cpp
     src/auth/InactivityGuard.cpp
+    src/auth/SecurityAuditLog.cpp
+    src/auth/lock/LockOverlayController.cpp
 )
 
 # Storage
@@ -406,6 +647,11 @@ set(STORAGE_SOURCES
     # Core databases
     src/storage/sqlite/Database.cpp
     src/storage/sqlite/CacheDatabase.cpp
+
+    # Workspace persistence (Phase 2 — multi-window refactor)
+    src/storage/workspace/WorkspaceDb.cpp
+    src/storage/workspace/WorkspaceSnapshotRing.cpp
+    src/storage/workspace/CrashRecovery.cpp
 
     # Migration system
     src/storage/sqlite/migrations/MigrationRunner.cpp
@@ -425,6 +671,11 @@ set(STORAGE_SOURCES
 
     # Secure storage (unchanged)
     src/storage/secure/SecureStorage.cpp
+
+    # Workspace persistence (multi-window refactor Phase 2/4/10)
+    src/storage/workspace/WorkspaceDb.cpp
+    src/storage/workspace/WorkspaceSnapshotRing.cpp
+    src/storage/workspace/CrashRecovery.cpp
 
     # Repositories
     src/storage/repositories/SettingsRepository.cpp
@@ -476,19 +727,27 @@ set(STORAGE_SOURCES
     src/storage/sqlite/migrations/v016_broker_accounts.cpp
     src/storage/sqlite/migrations/v017_perf_indexes.cpp
     src/storage/sqlite/migrations/v018_widget_config.cpp
+    src/storage/sqlite/migrations/v019_sector_cache.cpp
+    src/storage/sqlite/migrations/v020_security_audit_log.cpp
+    src/storage/sqlite/migrations/v021_max_tokens_default.cpp
+    src/storage/sqlite/migrations/v022_portfolio_broker_link.cpp
 )
 
 # Python runner
 set(PYTHON_SOURCES
     src/python/PythonRunner.cpp
     src/python/PythonSetupManager.cpp
+    src/python/PythonWorker.cpp
 )
 
 # AI Chat
 set(AI_CHAT_SOURCES
     src/ai_chat/LlmService.cpp
+    src/ai_chat/ModelCatalog.cpp
+    src/ai_chat/ChatBubbleFactory.cpp
     src/ai_chat/AiChatScreen.cpp
     src/ai_chat/AiChatBubble.cpp
+    src/ai_chat/ChatBubbleController.cpp
 )
 
 # MCP — Model Context Protocol system
@@ -499,6 +758,13 @@ set(MCP_SOURCES
     src/mcp/McpClient.cpp
     src/mcp/McpManager.cpp
     src/mcp/McpInit.cpp
+    src/mcp/SchemaValidator.cpp
+    src/mcp/ToolRetriever.cpp
+
+    # Phase 5 — provider-neutral tool-call dispatcher + adapters.
+    src/mcp/dispatch/ToolDispatcher.cpp
+    src/mcp/dispatch/OpenAiAdapter.cpp
+    src/mcp/dispatch/AdapterFactory.cpp
 
     # Tool modules
     src/mcp/tools/NavigationTools.cpp
@@ -521,6 +787,8 @@ set(MCP_SOURCES
     src/mcp/tools/PythonTools.cpp
     src/mcp/tools/SystemTools.cpp
     src/mcp/tools/DataHubTools.cpp
+    src/mcp/tools/ReportBuilderTools.cpp
+    src/mcp/tools/MetaTools.cpp
 )
 
 # Trading
@@ -533,6 +801,13 @@ set(TRADING_SOURCES
     src/trading/AccountDataStream.cpp
     src/trading/DataStreamManager.cpp
     src/trading/ExchangeService.cpp
+    src/trading/ExchangeSession.cpp
+    src/trading/ExchangeSessionManager.cpp
+    src/trading/ExchangeDaemonPool.cpp
+    # Native Kraken WebSocket v2 client
+    src/trading/exchanges/kraken/KrakenSymbolMapper.cpp
+    src/trading/exchanges/kraken/KrakenBook.cpp
+    src/trading/exchanges/kraken/KrakenWsClient.cpp
     src/trading/brokers/BrokerHttp.cpp
     # Trading WebSocket
     src/trading/websocket/ZerodhaWebSocket.cpp
@@ -589,6 +864,7 @@ set(SERVICE_SOURCES
     src/services/ma_analytics/MAAnalyticsService.cpp
     src/services/geopolitics/GeopoliticsService.cpp
     src/services/maritime/MaritimeService.cpp
+    src/services/maritime/PortsCatalog.cpp
     src/services/ai_quant_lab/AIQuantLabService.cpp
     src/services/backtesting/BacktestingService.cpp
     src/services/algo_trading/AlgoTradingService.cpp
@@ -596,8 +872,38 @@ set(SERVICE_SOURCES
     src/services/portfolio/PortfolioAnalyticsService.cpp
     src/services/quantlib/QuantLibClient.cpp
     src/services/economics/EconomicsService.cpp
+    src/services/economics/MacroCalendarService.cpp
     src/services/agents/AgentService.cpp
     src/services/file_manager/FileManagerService.cpp
+
+    # Wallet (Phase 1 — Solana wallet identity + balance display)
+    src/services/wallet/Ed25519Verifier.cpp
+    src/services/wallet/SolanaRpcClient.cpp
+    src/services/wallet/LocalWalletBridge.cpp
+    src/services/wallet/ConnectWalletDialog.cpp
+    src/services/wallet/WalletService.cpp
+    src/services/wallet/WalletTypes.cpp
+    src/services/wallet/WalletBalanceProducer.cpp
+    src/services/wallet/TokenPriceProducer.cpp
+    # Wallet (Phase 2 — transaction-signing bridge + PumpPortal swap)
+    src/services/wallet/WalletTxBridge.cpp
+    src/services/wallet/SignTransactionDialog.cpp
+    src/services/wallet/PumpFunSwapService.cpp
+    # Wallet (Phase 2 Stage 2A.5 — multi-token holdings)
+    src/services/wallet/TokenMetadataService.cpp
+    # Wallet (Phase 2 Stage 2B — activity feed)
+    src/services/wallet/WalletActivityProducer.cpp
+    # Billing (Phase 2 Stage 2C — fee discount eligibility)
+    src/services/billing/FeeDiscountService.cpp
+    # Wallet (Phase 5 — buyback & burn dashboard producers)
+    src/services/wallet/BuybackBurnService.cpp
+    src/services/wallet/TreasuryService.cpp
+    # Wallet (Phase 3 — STAKE / veFNCPT / real-yield)
+    src/services/wallet/StakingService.cpp
+    src/services/wallet/RealYieldService.cpp
+    # Billing (Phase 3 — tier service driving cross-screen gating)
+    src/services/billing/TierService.cpp
+    src/services/sectors/SectorResolver.cpp
     src/services/workflow/NodeRegistry.cpp
     src/services/workflow/WorkflowService.cpp
     src/services/workflow/WorkflowExecutor.cpp
@@ -606,6 +912,7 @@ set(SERVICE_SOURCES
     src/services/workspace/WorkspaceSerializer.cpp
     src/services/workspace/WorkspaceManager.cpp
     src/services/workspace/WorkspaceTemplates.cpp
+    src/services/pushpins/PushpinService.cpp
     src/services/workflow/nodes/TriggerNodes.cpp
     src/services/workflow/nodes/ControlFlowNodes.cpp
     src/services/workflow/nodes/UtilityNodes.cpp
@@ -631,8 +938,29 @@ set(SERVICE_SOURCES
     src/services/polymarket/PolymarketService.cpp
     src/services/polymarket/PolymarketWebSocket.cpp
 
+    # Prediction Markets — exchange-agnostic abstraction (Polymarket, Kalshi, …)
+    src/services/prediction/PredictionExchangeAdapter.cpp
+    src/services/prediction/PredictionExchangeRegistry.cpp
+    src/services/prediction/PredictionCredentialStore.cpp
+    src/services/prediction/polymarket/PolymarketTypeMap.cpp
+    src/services/prediction/polymarket/PolymarketAdapter.cpp
+    src/services/prediction/kalshi/KalshiRestClient.cpp
+    src/services/prediction/kalshi/KalshiWsClient.cpp
+    src/services/prediction/kalshi/KalshiAdapter.cpp
+    # Phase 4 — Fincept Internal prediction-market adapter (demo mode until
+    # `fincept.markets_endpoint` is configured and `fincept_market` lands).
+    src/services/prediction/fincept_internal/FinceptInternalAdapter.cpp
+
     # Speech-to-text service (Python speech_recognition + Google API)
     src/services/stt/SpeechService.cpp
+
+    # Text-to-speech service (Python pyttsx3 — used as a portable substitute
+    # for Qt6::TextToSpeech when the Qt Speech module isn't installed).
+    src/services/tts/TtsService.cpp
+
+    # Clap-to-start trigger — lightweight pyaudio loop that fires a signal
+    # when it hears a (double-)clap. Wakes up the AiChatBubble mic.
+    src/services/voice_trigger/ClapDetectorService.cpp
 
     # Modular notification system — service + 15 providers
     src/services/notifications/NotificationService.cpp
@@ -660,12 +988,18 @@ set(UI_SOURCES
     src/ui/theme/ThemeManager.cpp
     src/ui/theme/StyleSheets.cpp
     src/ui/widgets/Card.cpp
+    src/ui/widgets/GroupBadge.cpp
     src/ui/widgets/StatusBadge.cpp
+    src/ui/pushpins/SymbolChip.cpp
+    src/ui/pushpins/PushpinBar.cpp
+    src/ui/components/ComponentCard.cpp
+    src/ui/components/ComponentBrowserDialog.cpp
     src/ui/widgets/SearchBar.cpp
     src/ui/widgets/GeometricBackground.cpp
     src/ui/widgets/WorldMapWidget.cpp
     src/ui/widgets/LoadingOverlay.cpp
     src/ui/widgets/ConfettiOverlay.cpp
+    src/ui/widgets/SpeedSparkline.cpp
     src/ui/tables/DataTable.cpp
     src/ui/charts/ChartFactory.cpp
     src/ui/navigation/NavigationBar.cpp
@@ -675,6 +1009,13 @@ set(UI_SOURCES
     src/ui/navigation/CommandBar.cpp
     src/ui/navigation/DockToolBar.cpp
     src/ui/navigation/DockStatusBar.cpp
+    src/ui/debug/DebugOverlay.cpp
+    src/ui/command/CommandParser.cpp
+    src/ui/command/SuggestionIndex.cpp
+    src/ui/command/QuickCommandBar.cpp
+    src/ui/command/CommandPalette.cpp
+    src/ui/notifications/NotificationService.cpp
+    src/ui/error/ErrorPipeline.cpp
 
     src/ui/workspace/WorkspaceNewDialog.cpp
     src/ui/workspace/WorkspaceOpenDialog.cpp
@@ -700,6 +1041,7 @@ set(SCREEN_SOURCES
     src/screens/settings/McpServersSection.cpp
     src/screens/settings/KeybindingsSection.cpp
     src/screens/settings/PythonEnvSection.cpp
+    src/screens/settings/VoiceConfigSection.cpp
     src/screens/about/AboutScreen.cpp
     src/screens/support/SupportScreen.cpp
     src/screens/trade_viz/TradeVizScreen.cpp
@@ -712,6 +1054,8 @@ set(SCREEN_SOURCES
     src/screens/chat_mode/ChatModeScreen.cpp
     src/screens/chat_mode/TerminalToolBridge.cpp
     src/screens/setup/SetupScreen.cpp
+    src/screens/launchpad/LaunchpadScreen.cpp
+    src/screens/recovery/CrashRecoveryDialog.cpp
     src/screens/info/ContactScreen.cpp
     src/screens/info/TermsScreen.cpp
     src/screens/info/PrivacyScreen.cpp
@@ -721,6 +1065,8 @@ set(SCREEN_SOURCES
     src/screens/relationship_map/RelationshipMapScreen.cpp
     src/screens/relationship_map/RelationshipGraphScene.cpp
     src/services/relationship_map/RelationshipMapService.cpp
+    src/services/report_builder/ReportBuilderService.cpp
+    src/services/report_builder/ReportBuilderTemplates.cpp
     src/screens/markets/MarketsScreen.cpp
     src/screens/markets/MarketPanel.cpp
     src/screens/markets/MarketPanelStore.cpp
@@ -765,6 +1111,10 @@ set(SCREEN_SOURCES
     src/screens/dashboard/widgets/NewsCategoryWidget.cpp
     src/screens/dashboard/widgets/RecentFilesWidget.cpp
     src/screens/dashboard/widgets/VideoPlayerWidget.cpp
+    src/screens/dashboard/widgets/WebScraperWidget.cpp
+    src/screens/dashboard/widgets/GeopoliticsEventsWidget.cpp
+    src/screens/dashboard/widgets/MaritimeVesselsWidget.cpp
+    src/screens/dashboard/widgets/NotesWidget.cpp
     src/screens/report_builder/ReportBuilderScreen.cpp
     src/screens/report_builder/ComponentToolbar.cpp
     src/screens/report_builder/DocumentCanvas.cpp
@@ -821,8 +1171,9 @@ set(SCREEN_SOURCES
     src/screens/surface_analytics/SurfaceCsvImporter.cpp
     src/screens/surface_analytics/Surface3DWidget.cpp
     src/screens/surface_analytics/SurfaceTableWidget.cpp
-    src/screens/surface_analytics/SurfaceMetricsPanel.cpp
-    src/screens/surface_analytics/SurfaceDatabentoPanel.cpp
+    src/screens/surface_analytics/SurfaceLineWidget.cpp
+    src/screens/surface_analytics/SurfaceControlPanel.cpp
+    src/screens/surface_analytics/SurfaceDataInspector.cpp
     src/screens/surface_analytics/SurfaceAnalyticsScreen.cpp
     src/screens/dbnomics/DBnomicsDataTable.cpp
     src/screens/dbnomics/DBnomicsChartWidget.cpp
@@ -868,6 +1219,20 @@ set(SCREEN_SOURCES
     # AI Quant Lab
     src/screens/ai_quant_lab/AIQuantLabScreen.cpp
     src/screens/ai_quant_lab/QuantModulePanel.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_GS.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Functime.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Statsmodels.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Fortitudo.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Gluonts.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_CFA.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Backtesting.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_RL.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_DeepAgent.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_QuantReporting.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_AdvancedDisplays.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_AIMLDisplays.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_CoreDisplays.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Misc.cpp
 
     # Backtesting
     src/screens/backtesting/BacktestingScreen.cpp
@@ -918,7 +1283,7 @@ set(SCREEN_SOURCES
     src/screens/economics/panels/BeaPanel.cpp
     src/screens/economics/panels/FinceptMacroPanel.cpp
 
-    # Polymarket
+    # Polymarket / Prediction Markets
     src/screens/polymarket/PolymarketScreen.cpp
     src/screens/polymarket/PolymarketCommandBar.cpp
     src/screens/polymarket/PolymarketMarketCard.cpp
@@ -929,6 +1294,9 @@ set(SCREEN_SOURCES
     src/screens/polymarket/PolymarketLeaderboard.cpp
     src/screens/polymarket/PolymarketActivityFeed.cpp
     src/screens/polymarket/PolymarketStatusBar.cpp
+    src/screens/polymarket/PredictionAccountDialog.cpp
+    src/screens/polymarket/ExchangePresentation.cpp
+    src/screens/polymarket/PolymarketOrderBlotter.cpp
 
     # Alpha Arena
     src/screens/alpha_arena/AlphaArenaScreen.cpp
@@ -981,8 +1349,7 @@ set(SCREEN_SOURCES
     src/screens/portfolio/views/PlanningView.cpp
     src/screens/portfolio/views/EconomicsView.cpp
     src/screens/portfolio/PortfolioFFNView.cpp
-    src/screens/portfolio/PortfolioAiPanel.cpp
-    src/screens/portfolio/PortfolioAgentPanel.cpp
+    src/screens/portfolio/PortfolioInsightsPanel.cpp
     src/screens/agent_config/AgentConfigScreen.cpp
     src/screens/agent_config/AgentsViewPanel.cpp
     src/screens/agent_config/SystemViewPanel.cpp
@@ -1008,14 +1375,40 @@ set(SCREEN_SOURCES
     src/screens/node_editor/properties/ExecutionResultsPanel.cpp
     src/screens/node_editor/toolbar/NodeEditorToolbar.cpp
     src/screens/node_editor/toolbar/DeployDialog.cpp
+
+    # Crypto Center
+    src/screens/crypto_center/CryptoCenterScreen.cpp
+    src/screens/crypto_center/HoldingsBar.cpp
+    src/screens/crypto_center/WalletActionConfirmDialog.cpp
+    src/screens/crypto_center/tabs/ComingSoonTab.cpp
+    src/screens/crypto_center/tabs/HomeTab.cpp
+    src/screens/crypto_center/tabs/SettingsTab.cpp
+    src/screens/crypto_center/tabs/TradeTab.cpp
+    src/screens/crypto_center/tabs/ActivityTab.cpp
+    src/screens/crypto_center/panels/SwapPanel.cpp
+    src/screens/crypto_center/panels/HoldingsTable.cpp
+    src/screens/crypto_center/panels/FeeDiscountPanel.cpp
+    # Crypto Center — Phase 5 (buyback & burn dashboard)
+    src/screens/crypto_center/tabs/RoadmapTab.cpp
+    src/screens/crypto_center/panels/BuybackBurnPanel.cpp
+    src/screens/crypto_center/panels/SupplyChartPanel.cpp
+    src/screens/crypto_center/panels/TreasuryPanel.cpp
+    src/screens/crypto_center/tabs/StakeTab.cpp
+    src/screens/crypto_center/panels/ActiveLocksPanel.cpp
+    src/screens/crypto_center/panels/LockPanel.cpp
+    src/screens/crypto_center/panels/TierPanel.cpp
+    # Crypto Center — Phase 4 (MARKETS tab — internal prediction markets)
+    src/screens/crypto_center/tabs/MarketsTab.cpp
+    src/screens/crypto_center/panels/MarketsListPanel.cpp
 )
 
 # App
 set(APP_SOURCES
     src/app/main.cpp
-    src/app/MainWindow.cpp
+    src/app/WindowFrame.cpp
     src/app/ScreenRouter.cpp
     src/app/DockScreenRouter.cpp
+    src/app/TerminalShell.cpp
 )
 
 # All screen files compiled individually — they have local statics/functions that
@@ -1035,6 +1428,20 @@ set_source_files_properties(
     src/screens/agent_config/WorkflowsViewPanel.cpp
     src/screens/ai_quant_lab/AIQuantLabScreen.cpp
     src/screens/ai_quant_lab/QuantModulePanel.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_GS.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Functime.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Statsmodels.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Fortitudo.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Gluonts.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_CFA.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Backtesting.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_RL.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_DeepAgent.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_QuantReporting.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_AdvancedDisplays.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_AIMLDisplays.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_CoreDisplays.cpp
+    src/screens/ai_quant_lab/QuantModulePanel_Misc.cpp
     src/screens/akshare/AkShareScreen.cpp
     src/screens/algo_trading/AlgoTradingScreen.cpp
     src/screens/algo_trading/DeploymentDashboard.cpp
@@ -1088,7 +1495,6 @@ set_source_files_properties(
     src/screens/dashboard/DashboardToolBar.cpp
     src/screens/dashboard/MarketPulsePanel.cpp
     src/screens/dashboard/TickerBar.cpp
-    src/screens/dashboard/WidgetGrid.cpp
     src/screens/dashboard/canvas/AddWidgetDialog.cpp
     src/screens/dashboard/canvas/DashboardCanvas.cpp
     src/screens/dashboard/canvas/DashboardTemplates.cpp
@@ -1124,7 +1530,32 @@ set_source_files_properties(
     src/screens/dashboard/widgets/RecentFilesWidget.cpp
     src/screens/dashboard/widgets/VideoPlayerWidget.cpp
     src/screens/dashboard/widgets/WatchlistWidget.cpp
+    src/screens/dashboard/widgets/WebScraperWidget.cpp
+    src/screens/dashboard/widgets/GeopoliticsEventsWidget.cpp
+    src/screens/dashboard/widgets/MaritimeVesselsWidget.cpp
+    src/screens/dashboard/widgets/NotesWidget.cpp
     src/screens/data_mapping/DataMappingScreen.cpp
+    src/screens/crypto_center/CryptoCenterScreen.cpp
+    src/screens/crypto_center/HoldingsBar.cpp
+    src/screens/crypto_center/WalletActionConfirmDialog.cpp
+    src/screens/crypto_center/tabs/ComingSoonTab.cpp
+    src/screens/crypto_center/tabs/HomeTab.cpp
+    src/screens/crypto_center/tabs/SettingsTab.cpp
+    src/screens/crypto_center/tabs/TradeTab.cpp
+    src/screens/crypto_center/tabs/ActivityTab.cpp
+    src/screens/crypto_center/panels/SwapPanel.cpp
+    src/screens/crypto_center/panels/HoldingsTable.cpp
+    src/screens/crypto_center/panels/FeeDiscountPanel.cpp
+    src/screens/crypto_center/tabs/RoadmapTab.cpp
+    src/screens/crypto_center/panels/BuybackBurnPanel.cpp
+    src/screens/crypto_center/panels/SupplyChartPanel.cpp
+    src/screens/crypto_center/panels/TreasuryPanel.cpp
+    src/screens/crypto_center/tabs/StakeTab.cpp
+    src/screens/crypto_center/panels/ActiveLocksPanel.cpp
+    src/screens/crypto_center/panels/LockPanel.cpp
+    src/screens/crypto_center/panels/TierPanel.cpp
+    src/screens/crypto_center/tabs/MarketsTab.cpp
+    src/screens/crypto_center/panels/MarketsListPanel.cpp
     src/screens/dbnomics/DBnomicsChartWidget.cpp
     src/screens/dbnomics/DBnomicsDataTable.cpp
     src/screens/dbnomics/DBnomicsScreen.cpp
@@ -1199,8 +1630,7 @@ set_source_files_properties(
     src/screens/node_editor/toolbar/DeployDialog.cpp
     src/screens/node_editor/toolbar/NodeEditorToolbar.cpp
     src/screens/notes/NotesScreen.cpp
-    src/screens/portfolio/PortfolioAgentPanel.cpp
-    src/screens/portfolio/PortfolioAiPanel.cpp
+    src/screens/portfolio/PortfolioInsightsPanel.cpp
     src/screens/portfolio/PortfolioBlotter.cpp
     src/screens/portfolio/PortfolioCommandBar.cpp
     src/screens/portfolio/PortfolioDetailWrapper.cpp
@@ -1237,13 +1667,16 @@ set_source_files_properties(
     src/screens/settings/McpServersSection.cpp
     src/screens/settings/SettingsScreen.cpp
     src/screens/setup/SetupScreen.cpp
+    src/screens/launchpad/LaunchpadScreen.cpp
+    src/screens/recovery/CrashRecoveryDialog.cpp
     src/screens/support/SupportScreen.cpp
     src/screens/surface_analytics/Surface3DWidget.cpp
     src/screens/surface_analytics/SurfaceAnalyticsScreen.cpp
+    src/screens/surface_analytics/SurfaceControlPanel.cpp
     src/screens/surface_analytics/SurfaceCsvImporter.cpp
-    src/screens/surface_analytics/SurfaceDatabentoPanel.cpp
+    src/screens/surface_analytics/SurfaceDataInspector.cpp
     src/screens/surface_analytics/SurfaceDemoData.cpp
-    src/screens/surface_analytics/SurfaceMetricsPanel.cpp
+    src/screens/surface_analytics/SurfaceLineWidget.cpp
     src/screens/surface_analytics/SurfaceTableWidget.cpp
     src/screens/trade_viz/TradeVizScreen.cpp
     src/screens/watchlist/WatchlistScreen.cpp
@@ -1287,6 +1720,8 @@ set_source_files_properties(
     src/storage/sqlite/migrations/v016_broker_accounts.cpp
     src/storage/sqlite/migrations/v017_perf_indexes.cpp
     src/storage/sqlite/migrations/v018_widget_config.cpp
+    src/storage/sqlite/migrations/v019_sector_cache.cpp
+    src/storage/sqlite/migrations/v020_security_audit_log.cpp
     # Polymarket screen files — each defines static fmt_* helpers in same namespace
     src/screens/polymarket/PolymarketScreen.cpp
     src/screens/polymarket/PolymarketCommandBar.cpp
@@ -1298,6 +1733,7 @@ set_source_files_properties(
     src/screens/polymarket/PolymarketLeaderboard.cpp
     src/screens/polymarket/PolymarketActivityFeed.cpp
     src/screens/polymarket/PolymarketStatusBar.cpp
+    src/screens/polymarket/PredictionAccountDialog.cpp
     src/trading/websocket/ZerodhaWebSocket.cpp
     src/trading/websocket/AngelOneWebSocket.cpp
     # Trading broker files — each defines static now_ts() in same namespace
@@ -1326,8 +1762,9 @@ set_source_files_properties(
 # ADS files use anonymous namespaces and heavy Qt meta-object includes —
 # exclude from unity to avoid ODR / symbol clashes in large batches
 set_source_files_properties(
-    src/app/MainWindow.cpp
+    src/app/WindowFrame.cpp
     src/app/DockScreenRouter.cpp
+    src/app/TerminalShell.cpp
     PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE
 )
 
@@ -1339,6 +1776,11 @@ set_source_files_properties(
     src/mcp/McpClient.cpp
     src/mcp/McpManager.cpp
     src/mcp/McpInit.cpp
+    src/mcp/SchemaValidator.cpp
+    src/mcp/ToolRetriever.cpp
+    src/mcp/dispatch/ToolDispatcher.cpp
+    src/mcp/dispatch/OpenAiAdapter.cpp
+    src/mcp/dispatch/AdapterFactory.cpp
     src/mcp/tools/NavigationTools.cpp
     src/mcp/tools/MarketsTools.cpp
     src/mcp/tools/WatchlistTools.cpp
@@ -1358,6 +1800,7 @@ set_source_files_properties(
     src/mcp/tools/SettingsTools.cpp
     src/mcp/tools/PythonTools.cpp
     src/mcp/tools/SystemTools.cpp
+    src/mcp/tools/MetaTools.cpp
     PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE
 )
 
@@ -1417,7 +1860,23 @@ set_source_files_properties(
 # MACOSX_BUNDLE — create a proper .app bundle on macOS
 if(WIN32)
     set(_FINCEPT_EXE_FLAGS WIN32)
-    set(_FINCEPT_PLATFORM_SOURCES resources/app.rc)
+    # Generate app.rc from app.rc.in so FILEVERSION / PRODUCTVERSION / string
+    # table reflect the project() VERSION. Without this the exe's PE version
+    # resource is 0.0.0.0 and Windows Error Reporting cannot triage crashes
+    # by app version (see issue #215). The .ico reference is relative to the
+    # generated file's directory, so copy fincept.ico next to it.
+    set(FINCEPT_VER_MAJOR ${PROJECT_VERSION_MAJOR})
+    set(FINCEPT_VER_MINOR ${PROJECT_VERSION_MINOR})
+    set(FINCEPT_VER_PATCH ${PROJECT_VERSION_PATCH})
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/app.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
+        @ONLY)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/fincept.ico"
+        "${CMAKE_CURRENT_BINARY_DIR}/fincept.ico"
+        COPYONLY)
+    set(_FINCEPT_PLATFORM_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/app.rc")
 elseif(APPLE)
     set(_FINCEPT_EXE_FLAGS MACOSX_BUNDLE)
     set(_FINCEPT_PLATFORM_SOURCES "")
@@ -1689,11 +2148,44 @@ target_link_libraries(FinceptTerminal PRIVATE
     qtadvanceddocking-qt6
     OpenSSL::SSL
     OpenSSL::Crypto
+    fincept_ed25519
 )
 
-# macOS: also link Security.framework for Keychain in SecureStorage
+# macOS: link Security.framework + CoreFoundation for SecItem API in SecureStorage
 if(APPLE)
-    target_link_libraries(FinceptTerminal PRIVATE "-framework Security")
+    target_link_libraries(FinceptTerminal PRIVATE "-framework Security" "-framework CoreFoundation")
+endif()
+
+# Linux: optionally link libsecret for cryptographically-secure credential
+# storage (Secret Service / GNOME Keyring / KWallet via the freedesktop
+# compatibility layer). Without libsecret, SecureStorage falls back to
+# XOR-obfuscated QSettings which is NOT secure. Install libsecret-1-dev
+# (Debian/Ubuntu), libsecret-devel (Fedora), or libsecret (Arch) and
+# reconfigure to enable.
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBSECRET IMPORTED_TARGET libsecret-1)
+        if(LIBSECRET_FOUND)
+            target_link_libraries(FinceptTerminal PRIVATE PkgConfig::LIBSECRET)
+            target_compile_definitions(FinceptTerminal PRIVATE FINCEPT_HAVE_LIBSECRET)
+            message(STATUS "libsecret found — Linux SecureStorage will use Secret Service backend")
+        else()
+            message(WARNING
+                "libsecret-1 not found — Linux credential storage falls back to "
+                "XOR-obfuscated QSettings (NOT cryptographically secure). "
+                "Install libsecret-1-dev and rebuild for production deployments.")
+        endif()
+    endif()
+endif()
+
+# Windows: link dbghelp for the crash-handler minidump writer (see
+# src/core/crash/CrashHandler.cpp). Also link Advapi32/Crypt32 explicitly for
+# SecureStorage — they're normally pulled in transitively, but when MSVC runs
+# /OPT:REF aggressively on release builds the indirect reference via wincred.h
+# can get stripped, producing late-link errors.
+if(WIN32)
+    target_link_libraries(FinceptTerminal PRIVATE dbghelp Advapi32 Crypt32)
 endif()
 
 # Copy OpenSSL DLLs to build output — Windows only
@@ -1786,15 +2278,16 @@ if(WIN32)
             "C:/Qt/6.8.2/msvc2022_64/bin"
     )
     if(WINDEPLOYQT_EXE)
-        # Only deploy Qt DLLs when explicitly requested via -DDEPLOY_QT=ON
-        # Avoids 10-30s overhead on every incremental build
-        if(DEPLOY_QT)
-            add_custom_command(TARGET FinceptTerminal POST_BUILD
-                COMMAND "${WINDEPLOYQT_EXE}"
-                ARGS "--no-translations" "$<TARGET_FILE:FinceptTerminal>"
-                COMMENT "Running windeployqt..."
-            )
-        endif()
+        # Always deploy Qt DLLs/plugins next to the exe. windeployqt is
+        # idempotent and copy_if_different — incremental cost is ~1-2 s
+        # when nothing changed. The previous DEPLOY_QT=ON gate caused the
+        # exe to run against a stale plugin set after a clean rebuild,
+        # producing 0xc0000005 crashes on startup.
+        add_custom_command(TARGET FinceptTerminal POST_BUILD
+            COMMAND "${WINDEPLOYQT_EXE}"
+            ARGS "--no-translations" "--no-compiler-runtime" "$<TARGET_FILE:FinceptTerminal>"
+            COMMENT "Running windeployqt..."
+        )
     endif()
 
     # ── Fix: Qt Maintenance Tool partial-update leaves plugins mismatched ──────
@@ -1811,20 +2304,23 @@ if(WIN32)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${QT_CONSISTENT_PLUGINS}/sqldrivers/qsqlite.dll"
                 "$<TARGET_FILE_DIR:FinceptTerminal>/sqldrivers/qsqlite.dll"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${QT_CONSISTENT_PLUGINS}/sqldrivers/qsqlmimer.dll"
-                "$<TARGET_FILE_DIR:FinceptTerminal>/sqldrivers/qsqlmimer.dll"
             COMMENT "Overwriting sqldrivers with consistent Qt_temp plugins..."
         )
     endif()
 endif()
 
 # ── Copy Python scripts to build output ──────────────────────────────────────
+# POST_BUILD drags the whole scripts/ tree over. Afterwards we prune junk
+# that must never ship — backup folders (agents.deleted.*), test caches,
+# local SQLite databases — because on macOS anything unexpected in the
+# .app bundle makes codesign reject it ("bundle format unrecognized").
 add_custom_command(TARGET FinceptTerminal POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts"
         "$<TARGET_FILE_DIR:FinceptTerminal>/scripts"
-    COMMENT "Copying Python scripts to build output..."
+    COMMAND ${CMAKE_COMMAND} -DSCRIPTS_DIR=$<TARGET_FILE_DIR:FinceptTerminal>/scripts
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/prune_scripts_junk.cmake"
+    COMMENT "Copying Python scripts to build output + pruning junk..."
 )
 
 # ── Copy requirements files to build output ──────────────────────────────────
@@ -1840,6 +2336,22 @@ add_custom_command(TARGET FinceptTerminal POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/requirements-numpy2.txt"
         "$<TARGET_FILE_DIR:FinceptTerminal>/resources/requirements-numpy2.txt"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/component_catalog.json"
+        "$<TARGET_FILE_DIR:FinceptTerminal>/resources/component_catalog.json"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:FinceptTerminal>/resources/wallet"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/wallet/connect.html"
+        "$<TARGET_FILE_DIR:FinceptTerminal>/resources/wallet/connect.html"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/wallet/swap.html"
+        "$<TARGET_FILE_DIR:FinceptTerminal>/resources/wallet/swap.html"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:FinceptTerminal>/resources/wallet/vendor"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/wallet/vendor"
+        "$<TARGET_FILE_DIR:FinceptTerminal>/resources/wallet/vendor"
     COMMENT "Copying requirements files to build output..."
 )
 
@@ -1900,7 +2412,8 @@ if(WIN32)
     # Windows: install exe + all DLLs beside it (windeployqt already copies them)
     install(TARGETS FinceptTerminal RUNTIME DESTINATION "." COMPONENT core)
     install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/"
-            DESTINATION "scripts" COMPONENT scripts)
+            DESTINATION "scripts" COMPONENT scripts
+            REGEX "(\\.deleted\\.|\\.pytest_cache|\\.benchmarks|__pycache__|\\.pyc$|\\.db$|\\.sqlite$|\\.sqlite3$|\\.bak$|\\.orig$)" EXCLUDE)
     # Requirements files — needed by PythonSetupManager at first run to install
     # Python packages. Must be deployed beside the exe so find_requirements_file()
     # can locate them at C:/Program Files/FinceptTerminal/resources/*.txt.
@@ -1926,7 +2439,8 @@ else()
     # Python analytics scripts
     install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/"
             DESTINATION "share/fincept-terminal/scripts"
-            USE_SOURCE_PERMISSIONS COMPONENT scripts)
+            USE_SOURCE_PERMISSIONS COMPONENT scripts
+            REGEX "(\\.deleted\\.|\\.pytest_cache|\\.benchmarks|__pycache__|\\.pyc$|\\.db$|\\.sqlite$|\\.sqlite3$|\\.bak$|\\.orig$)" EXCLUDE)
 
     # App icon (PNG required for hicolor theme; convert .ico → .png in CI)
     set(_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/resources/fincept.png")
@@ -1980,29 +2494,29 @@ if(FINCEPT_BUILD_INSTALLER)
         # Python-backed screens crash on an installed build.
         install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/"
                 DESTINATION "scripts" COMPONENT scripts)
-        # Requirements files — read by PythonSetupManager::install_packages()
-        # during first-run setup. Missing files → setup fails on installed build.
-        install(FILES
-                "${CMAKE_CURRENT_SOURCE_DIR}/resources/requirements-numpy1.txt"
-                "${CMAKE_CURRENT_SOURCE_DIR}/resources/requirements-numpy2.txt"
-                DESTINATION "resources" COMPONENT core)
-        # Qt plugin directories
-        install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/platforms"
+        # Full resources/ tree — icons, images, stylesheets, data files, etc.
+        # Also catches requirements-*.txt. Without this, asset paths resolved
+        # via AppPaths::resources_dir() return an empty dir and screens that
+        # load PNGs / JSON config crash on missing-file errors.
+        install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources/"
+                DESTINATION "resources" COMPONENT core
+                PATTERN ".git*" EXCLUDE
+                PATTERN "*.pyc" EXCLUDE)
+        # qt.conf — pins plugin/library paths relative to the exe. Without
+        # this Qt uses hardcoded build-machine paths that don't exist on the
+        # user's machine, producing "could not load the Qt platform plugin".
+        install(FILES "$<TARGET_FILE_DIR:FinceptTerminal>/qt.conf"
                 DESTINATION "." COMPONENT core OPTIONAL)
-        install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/sqldrivers"
-                DESTINATION "." COMPONENT core OPTIONAL)
-        install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/imageformats"
-                DESTINATION "." COMPONENT core OPTIONAL)
-        install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/styles"
-                DESTINATION "." COMPONENT core OPTIONAL)
-        install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/tls"
-                DESTINATION "." COMPONENT core OPTIONAL)
-        install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/multimedia"
-                DESTINATION "." COMPONENT core OPTIONAL)
-        install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/networkinformation"
-                DESTINATION "." COMPONENT core OPTIONAL)
-        install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/generic"
-                DESTINATION "." COMPONENT core OPTIONAL)
+        # Qt plugin directories. OPTIONAL keeps the install non-fatal when
+        # a plugin dir isn't produced by windeployqt on a given host (e.g.
+        # texttospeech only appears when Qt TTS is present).
+        foreach(_plugin_dir
+                platforms sqldrivers imageformats iconengines styles tls
+                multimedia texttospeech networkinformation platforminputcontexts
+                printsupport generic)
+            install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/${_plugin_dir}"
+                    DESTINATION "." COMPONENT core OPTIONAL)
+        endforeach()
     endif()
 
     # ── CPack general metadata ───────────────────────────────────────────────
@@ -2117,7 +2631,7 @@ if(FINCEPT_BUILD_INSTALLER)
 
     cpack_add_component(scripts
         DISPLAY_NAME "Python Analytics Scripts"
-        DESCRIPTION  "1300+ CFA-level Python analytics scripts (equity, derivatives, portfolio, quant)"
+        DESCRIPTION  "1300+ Python analytics scripts (equity, derivatives, portfolio, quant)"
         DEPENDS core)
 
     # ── CPackIFW component configuration ─────────────────────────────────────

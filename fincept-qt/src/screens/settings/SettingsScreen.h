@@ -1,12 +1,16 @@
 #pragma once
+#include "core/events/EventBus.h"
 #include "screens/IStatefulScreen.h"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFrame>
 #include <QHash>
+#include <QHideEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
+#include <QListWidget>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QTimer>
@@ -29,6 +33,7 @@ class SettingsScreen : public QWidget, public IStatefulScreen {
 
   protected:
     void showEvent(QShowEvent* e) override;
+    void hideEvent(QHideEvent* e) override;
 
   private:
     QStackedWidget* sections_ = nullptr;
@@ -115,6 +120,8 @@ class SettingsScreen : public QWidget, public IStatefulScreen {
     QLabel* sec_pin_status_ = nullptr;
     QComboBox* sec_lock_timeout_ = nullptr;
     QCheckBox* sec_autolock_toggle_ = nullptr;
+    QCheckBox* sec_lock_on_minimize_ = nullptr;
+    QListWidget* sec_audit_list_ = nullptr;
     QLabel* sec_lockout_status_ = nullptr;
     QPushButton* sec_change_pin_btn_ = nullptr;
     // Change PIN sub-widgets (shown/hidden dynamically)
@@ -131,10 +138,20 @@ class SettingsScreen : public QWidget, public IStatefulScreen {
     void load_appearance();
     void load_notifications();
     void load_security();
+    void refresh_audit_log();
     void refresh_storage_stats();
 
     // ── Notification helpers ──────────────────────────────────────────────────
     void save_provider_fields(const QString& provider_id, const ProviderWidgets& pw);
+
+    // ── MCP-driven UI sync ────────────────────────────────────────────────────
+    // MCP settings tools publish settings.changed / llm.provider_changed when
+    // the LLM mutates settings via Finagent or AI Chat. Subscribers are
+    // active only while the screen is visible (P3 lifecycle).
+    QList<EventBus::HandlerId> mcp_event_subs_;
+    void subscribe_mcp_events();
+    void unsubscribe_mcp_events();
+    void reload_all_sections(); // shared reload logic — also called from showEvent
 };
 
 } // namespace fincept::screens

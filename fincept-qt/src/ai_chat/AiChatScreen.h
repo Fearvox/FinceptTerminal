@@ -1,17 +1,19 @@
 #pragma once
 
 #include "ai_chat/LlmService.h"
+#include "core/events/EventBus.h"
 #include "screens/IStatefulScreen.h"
 
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QListWidget>
 #include <QMutex>
 #include <QPlainTextEdit>
 #include <QPointer>
+#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QScrollArea>
-#include <QTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -29,7 +31,8 @@ class AiChatScreen : public QWidget, public IStatefulScreen {
     QVariantMap save_state() const override;
     QString state_key() const override { return "ai_chat"; }
     // v2 adds: draft text, search text, scroll position, attached file path.
-    int state_version() const override { return 2; }
+    // v3 adds: sidebar_collapsed.
+    int state_version() const override { return 3; }
 
   protected:
     void showEvent(QShowEvent* e) override;
@@ -49,6 +52,7 @@ class AiChatScreen : public QWidget, public IStatefulScreen {
     void on_provider_changed();
     void on_search_changed(const QString& text);
     void on_typing_indicator_tick();
+    void on_toggle_sidebar();
 
   private:
     // ── Sidebar ──────────────────────────────────────────────────────────
@@ -60,6 +64,13 @@ class AiChatScreen : public QWidget, public IStatefulScreen {
     QPushButton* rename_btn_ = nullptr;
     QLabel* provider_lbl_ = nullptr;
     QLabel* model_lbl_ = nullptr;
+
+    // ── Sidebar collapse state ───────────────────────────────────────────
+    QPushButton* sidebar_toggle_btn_ = nullptr;
+    QPropertyAnimation* sidebar_anim_ = nullptr;
+    bool sidebar_collapsed_ = false;
+    static constexpr int kSidebarExpandedWidth = 280;
+    void apply_sidebar_collapsed(bool collapsed, bool animate);
 
     // ── Chat header ──────────────────────────────────────────────────────
     QWidget* chat_widget_ = nullptr;
@@ -92,7 +103,7 @@ class AiChatScreen : public QWidget, public IStatefulScreen {
     mutable QMutex history_mutex_;
     std::vector<ai_chat::ConversationMessage> history_;
     bool streaming_ = false;
-    QPointer<QTextEdit> streaming_bubble_;
+    QPointer<QLabel> streaming_bubble_;
     int total_tokens_ = 0;
     int total_messages_ = 0;
 
@@ -111,13 +122,22 @@ class AiChatScreen : public QWidget, public IStatefulScreen {
     void load_messages(const QString& session_id);
     void create_new_session();
     void add_message_bubble(const QString& role, const QString& content, const QString& timestamp = {});
-    QTextEdit* add_streaming_bubble();
+    QLabel* add_streaming_bubble();
     void clear_messages();
     void scroll_to_bottom();
     void set_input_enabled(bool enabled);
     void update_stats();
     void show_welcome(bool show);
     void show_typing(bool show);
+
+    // EventBus subscriptions — registered in showEvent, released in hideEvent.
+    // MCP set_active_llm publishes llm.provider_changed when the LLM (or
+    // Finagent) switches the active provider. We force-reload LlmService so
+    // the next message uses the new provider; LlmService::config_changed
+    // signal then triggers on_provider_changed for header refresh.
+    QList<EventBus::HandlerId> mcp_event_subs_;
+    void subscribe_mcp_events();
+    void unsubscribe_mcp_events();
 };
 
 } // namespace fincept::screens
