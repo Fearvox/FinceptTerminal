@@ -150,7 +150,23 @@ Populates `mfe_10 / mfe_50 / mfe_100` and `mae_10 / mae_50 / mae_100`
 columns using Yahoo/Binance bars after `exit_ts`. Prints aggregate
 MFE leakage over last 30 trades vs the 0.5R target.
 
-## 9. Manual corrections
+## 9. The Leap VM MoE / ATA room
+
+For the May 2026 TradingView The Leap Crypto contest, run the read-only
+accountability room after trades are logged:
+
+```bash
+cd /Users/0xvox/Documents/GitHub/FinceptTerminal/fincept-qt/scripts/data_algo
+python3 -m propfirm_engine.leap_moe_room --date today --quiet
+```
+
+It reads `trade_journal.sqlite` in SQLite read-only mode, checks contest
+activity days / official crypto symbols / journal discipline, and produces a
+local ATA-style role transcript. It does not place trades or generate entries.
+
+Full notes: `propfirm_engine/README.leap_moe_room.md`.
+
+## 10. Manual corrections
 
 If a webhook row was opened but you chose not to execute on TV:
 ```bash
