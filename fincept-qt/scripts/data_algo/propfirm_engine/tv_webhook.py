@@ -9,6 +9,9 @@ at this server's URL with `?secret=...` appended.
 
 Endpoint (single): POST /tv-signal?secret=<TV_WEBHOOK_SECRET>
 Health:              GET  /health
+Fusion feed:         appends sanitized events to fusion_alerts.jsonl
+Local panel:         python3 -m propfirm_engine.fusion_panel_server  # :5556
+Combined stack:      python3 -m propfirm_engine.fusion_stack         # :5555 + :5556
 
 Entry payload (from both scripts, detected by `action` field):
     SATS:           {"action":"buy","ticker":"USOIL","tf":"1h","price":87.32,
@@ -47,6 +50,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .fusion_panel import DEFAULT_ALERT_LOG_PATH, MAX_BODY_BYTES, append_alert_event
 from .log_tv_trade import open_trade
 from .trade_journal import DEFAULT_DB_PATH, connect
 
@@ -134,6 +138,26 @@ def _regime_from_entry(p: dict) -> str:
 class TVWebhookHandler(BaseHTTPRequestHandler):
     secret: str = ""
     db_path: str = DEFAULT_DB_PATH
+    alert_log_path: str = DEFAULT_ALERT_LOG_PATH
+
+    def _record_alert(self, kind: str, status: str, payload: dict,
+                      response: dict | None = None, error: str | None = None) -> None:
+        """Best-effort append to the local Fusion Chat alert feed.
+
+        Feed write failure must never make TradingView retry or block journal
+        writes. The feed is display-only evidence, not execution control.
+        """
+        try:
+            append_alert_event(
+                self.alert_log_path,
+                kind=kind,
+                status=status,
+                payload=payload,
+                response=response,
+                error=error,
+            )
+        except Exception as exc:  # pragma: no cover - log-only fail-open
+            self.log_message("alert feed append failed: %s", exc)
 
     def _reply(self, code: int, body: dict):
         self.send_response(code)
@@ -176,6 +200,9 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             return
 
         length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reply(413, {"error": f"payload too large; max {MAX_BODY_BYTES} bytes"})
+            return
         raw = self.rfile.read(length).decode(errors="replace")
         try:
             payload = json.loads(raw)
@@ -191,15 +218,21 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             return self._handle_entry(payload)
         if "event" in payload:
             return self._handle_exit(payload)
+        self._record_alert("unknown_payload", "rejected", payload,
+                           error="payload must contain action or event")
         self._reply(400, {"error": "payload must contain 'action' (entry) or 'event' (exit)"})
 
     def _handle_entry(self, p: dict):
         missing = [k for k in ENTRY_REQUIRED if k not in p]
         if missing:
+            self._record_alert("entry_rejected", "rejected", p,
+                               error=f"missing required fields: {missing}")
             self._reply(400, {"error": f"missing required fields: {missing}"})
             return
         action = str(p["action"]).lower()
         if action not in VALID_ACTIONS:
+            self._record_alert("entry_rejected", "rejected", p,
+                               error=f"action must be one of {sorted(VALID_ACTIONS)}")
             self._reply(400, {"error": f"action must be one of {sorted(VALID_ACTIONS)}"})
             return
 
@@ -217,6 +250,7 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
                 entry_ts=None,           # webhook receives near-realtime; use server now
             )
         except (ValueError, TypeError) as e:
+            self._record_alert("entry_rejected", "rejected", p, error=f"bad payload: {e}")
             self._reply(400, {"error": f"bad payload: {e}"})
             return
 
@@ -235,6 +269,7 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
         # Reset milestone tracker for the new trade id
         _tp_milestones[row["id"]] = set()
 
+        self._record_alert("entry_opened", "accepted", p, response=row)
         self._reply(200, {"kind": "entry_opened", **row})
         self.log_message("ENTRY #%s %s %s @ %s tp=%s setup=%s",
                          row["id"], row["symbol"], side,
@@ -243,10 +278,14 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
     def _handle_exit(self, p: dict):
         missing = [k for k in EXIT_REQUIRED if k not in p]
         if missing:
+            self._record_alert("exit_rejected", "rejected", p,
+                               error=f"missing required fields: {missing}")
             self._reply(400, {"error": f"missing required fields: {missing}"})
             return
         event = str(p["event"])
         if event not in VALID_EVENTS:
+            self._record_alert("exit_rejected", "rejected", p,
+                               error=f"event must be one of {sorted(VALID_EVENTS)}")
             self._reply(400, {"error": f"event must be one of {sorted(VALID_EVENTS)}"})
             return
 
@@ -256,9 +295,11 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
 
         if open_row is None:
             # No matching open trade — log and return 200 so TV doesn't retry
-            self._reply(200, {"kind": "ignored",
-                              "reason": f"no open trade for {ticker}",
-                              "event": event})
+            response = {"kind": "ignored",
+                        "reason": f"no open trade for {ticker}",
+                        "event": event}
+            self._record_alert("exit_ignored", "accepted", p, response=response)
+            self._reply(200, response)
             self.log_message("IGNORE %s %s (no open trade)", event, ticker)
             return
 
@@ -271,10 +312,12 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             # tp3_hit we could auto-close since trail would catch it on
             # next bar anyway, but to preserve exact paper-fill semantics
             # we let the follow-up sl_hit (at trailed level) close the row.
-            self._reply(200, {"kind": "milestone",
-                              "trade_id": trade_id,
-                              "event": event,
-                              "milestones": sorted(milestones)})
+            response = {"kind": "milestone",
+                        "trade_id": trade_id,
+                        "event": event,
+                        "milestones": sorted(milestones)}
+            self._record_alert("milestone", "accepted", p, response=response)
+            self._reply(200, response)
             self.log_message("MILESTONE #%s %s @ %s (milestones=%s)",
                              trade_id, event, price, sorted(milestones))
             return
@@ -289,11 +332,13 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             try:
                 closed = _close_trade(self.db_path, trade_id, price, reason)
             except Exception as e:  # pragma: no cover
+                self._record_alert("exit_rejected", "rejected", p, error=f"close failed: {e}")
                 self._reply(500, {"error": f"close failed: {e}"})
                 return
             # Pop milestone state
             _tp_milestones.pop(trade_id, None)
             closed["milestones_before_exit"] = sorted(milestones)
+            self._record_alert("exit_closed", "accepted", p, response=closed)
             self._reply(200, {"kind": "exit_closed", **closed})
             self.log_message("EXIT #%s %s %s @ %s reason=%s pnl=%+.2f%%",
                              trade_id, ticker, event, price, reason,
@@ -301,17 +346,19 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             return
 
         # Unreachable, but defensive
+        self._record_alert("exit_rejected", "rejected", p, error=f"unhandled event: {event}")
         self._reply(400, {"error": f"unhandled event: {event}"})
 
     def log_message(self, fmt, *args):  # noqa: A003
         sys.stderr.write(f"[{self.log_date_time_string()}] {fmt % args}\n")
 
 
-def make_handler(secret: str, db_path: str):
+def make_handler(secret: str, db_path: str, alert_log_path: str = DEFAULT_ALERT_LOG_PATH):
     class _H(TVWebhookHandler):
         pass
     _H.secret = secret
     _H.db_path = db_path
+    _H.alert_log_path = alert_log_path
     return _H
 
 
@@ -323,6 +370,8 @@ def main() -> int:
                         "behind a tunnel you trust)")
     p.add_argument("--port", type=int, default=5555)
     p.add_argument("--db", default=DEFAULT_DB_PATH)
+    p.add_argument("--alert-log", default=DEFAULT_ALERT_LOG_PATH,
+                   help="local JSONL feed for Fusion Chat panel (0600 on write)")
     args = p.parse_args()
 
     secret = os.environ.get("TV_WEBHOOK_SECRET", "")
@@ -331,10 +380,11 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    server = HTTPServer((args.host, args.port), make_handler(secret, args.db))
+    server = HTTPServer((args.host, args.port), make_handler(secret, args.db, args.alert_log))
     print(f"▶ tv_webhook listening on http://{args.host}:{args.port}", flush=True)
     print(f"  POST /tv-signal?secret=<secret>  (entry + exit; detected by `action`/`event`)")
     print(f"  GET  /health")
+    print(f"  feed: sanitized Fusion Chat JSONL at {args.alert_log}")
     print(f"  db: {args.db}")
     print(f"  secret length: {len(secret)} chars")
     try:

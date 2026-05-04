@@ -150,7 +150,34 @@ Populates `mfe_10 / mfe_50 / mfe_100` and `mae_10 / mae_50 / mae_100`
 columns using Yahoo/Binance bars after `exit_ts`. Prints aggregate
 MFE leakage over last 30 trades vs the 0.5R target.
 
-## 9. The Leap VM MoE / ATA room
+## 9. Fusion Chat local alert panel
+
+If you want the propfirm lane inside Windburn Fusion Chat, run the combined
+local stack instead of the bare webhook receiver:
+
+```bash
+cd /Users/0xvox/Documents/GitHub/FinceptTerminal/fincept-qt/scripts/data_algo
+python3 -m propfirm_engine.fusion_stack
+```
+
+This starts two local surfaces:
+
+| Surface | Default URL | Purpose |
+|---------|-------------|---------|
+| TradingView webhook | `http://127.0.0.1:5555/tv-signal?secret=...` | Receives alerts, writes journal rows, appends a sanitized JSONL feed |
+| Fusion panel | `http://127.0.0.1:5556/fusion-panel` | Read-only page that polls `/alerts` and displays accepted/rejected alert facts |
+
+Only tunnel the webhook port to TradingView. Keep the panel on `127.0.0.1` and
+let Fusion Chat iframe it as a local operator tab. The alert feed is display-only:
+it does not place trades, suggest entries, or load secrets.
+
+The standalone panel server is also available:
+
+```bash
+python3 -m propfirm_engine.fusion_panel_server --port 5556
+```
+
+## 10. The Leap VM MoE / ATA room
 
 For the May 2026 TradingView The Leap Crypto contest, run the read-only
 accountability room after trades are logged:
@@ -166,7 +193,7 @@ local ATA-style role transcript. It does not place trades or generate entries.
 
 Full notes: `propfirm_engine/README.leap_moe_room.md`.
 
-## 10. Manual corrections
+## 11. Manual corrections
 
 If a webhook row was opened but you chose not to execute on TV:
 ```bash
