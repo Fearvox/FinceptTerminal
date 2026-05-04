@@ -150,10 +150,11 @@ Populates `mfe_10 / mfe_50 / mfe_100` and `mae_10 / mae_50 / mae_100`
 columns using Yahoo/Binance bars after `exit_ts`. Prints aggregate
 MFE leakage over last 30 trades vs the 0.5R target.
 
-## 9. Fusion Chat local alert panel
+## 9. Fusion Chat and Fincept native alert panels
 
-If you want the propfirm lane inside Windburn Fusion Chat, run the combined
-local stack instead of the bare webhook receiver:
+If you want the propfirm lane inside Windburn Fusion Chat or FinceptTerminal's
+Algo Trading screen, run the combined local stack instead of the bare webhook
+receiver:
 
 ```bash
 cd /Users/0xvox/Documents/GitHub/FinceptTerminal/fincept-qt/scripts/data_algo
@@ -165,11 +166,18 @@ This starts two local surfaces:
 | Surface | Default URL | Purpose |
 |---------|-------------|---------|
 | TradingView webhook | `http://127.0.0.1:5555/tv-signal?secret=...` | Receives alerts, writes journal rows, appends a sanitized JSONL feed |
-| Fusion panel | `http://127.0.0.1:5556/fusion-panel` | Read-only page that polls `/alerts` and displays accepted/rejected alert facts |
+| Local alert panel | `http://127.0.0.1:5556/fusion-panel` | Read-only page that polls `/alerts` and displays accepted/rejected alert facts |
+| Fincept native tab | Algo Trading → `PROPFIRM` | Qt-native Obsidian panel that polls the same local `/alerts` endpoint |
 
 Only tunnel the webhook port to TradingView. Keep the panel on `127.0.0.1` and
-let Fusion Chat iframe it as a local operator tab. The alert feed is display-only:
-it does not place trades, suggest entries, or load secrets.
+let Fusion Chat iframe it or FinceptTerminal poll it locally. The alert feed is
+display-only: it does not place trades, suggest entries, or load secrets.
+
+Override the Fincept native panel endpoint if needed:
+
+```bash
+FINCEPT_PROPFIRM_PANEL_URL=http://127.0.0.1:5556
+```
 
 The standalone panel server is also available:
 

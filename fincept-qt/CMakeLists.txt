@@ -878,6 +878,7 @@ set(SCREEN_SOURCES
     src/screens/algo_trading/StrategyListPanel.cpp
     src/screens/algo_trading/ScannerPanel.cpp
     src/screens/algo_trading/DeploymentDashboard.cpp
+    src/screens/algo_trading/PropfirmPanel.cpp
 
     # Data Mapping
     src/screens/data_mapping/DataMappingScreen.cpp
@@ -1037,6 +1038,7 @@ set_source_files_properties(
     src/screens/akshare/AkShareScreen.cpp
     src/screens/algo_trading/AlgoTradingScreen.cpp
     src/screens/algo_trading/DeploymentDashboard.cpp
+    src/screens/algo_trading/PropfirmPanel.cpp
     src/screens/algo_trading/ScannerPanel.cpp
     src/screens/algo_trading/StrategyBuilderPanel.cpp
     src/screens/algo_trading/StrategyListPanel.cpp

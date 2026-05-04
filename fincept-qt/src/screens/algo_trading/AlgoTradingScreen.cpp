@@ -4,6 +4,7 @@
 #include "core/logging/Logger.h"
 #include "core/session/ScreenStateManager.h"
 #include "screens/algo_trading/DeploymentDashboard.h"
+#include "screens/algo_trading/PropfirmPanel.h"
 #include "screens/algo_trading/ScannerPanel.h"
 #include "screens/algo_trading/StrategyBuilderPanel.h"
 #include "screens/algo_trading/StrategyListPanel.h"
@@ -25,6 +26,8 @@ AlgoTradingScreen::AlgoTradingScreen(QWidget* parent) : QWidget(parent) {
     connect(poll_timer_, &QTimer::timeout, this, [this]() {
         if (active_tab_ == 3) // Dashboard tab
             AlgoTradingService::instance().list_deployments();
+        if (active_tab_ == 4 && propfirm_)
+            propfirm_->refresh();
     });
 
     // Keep deploy count badge in sync whenever deployments are loaded
@@ -53,6 +56,8 @@ void AlgoTradingScreen::showEvent(QShowEvent* e) {
 void AlgoTradingScreen::hideEvent(QHideEvent* e) {
     QWidget::hideEvent(e);
     poll_timer_->stop();
+    if (propfirm_)
+        propfirm_->stop_polling();
 }
 
 void AlgoTradingScreen::build_ui() {
@@ -67,11 +72,13 @@ void AlgoTradingScreen::build_ui() {
     strategies_ = new StrategyListPanel(this);
     scanner_ = new ScannerPanel(this);
     dashboard_ = new DeploymentDashboard(this);
+    propfirm_ = new PropfirmPanel(this);
 
     content_stack_->addWidget(builder_);
     content_stack_->addWidget(strategies_);
     content_stack_->addWidget(scanner_);
     content_stack_->addWidget(dashboard_);
+    content_stack_->addWidget(propfirm_);
     root->addWidget(content_stack_, 1);
 
     root->addWidget(build_status_bar());
@@ -95,7 +102,7 @@ QWidget* AlgoTradingScreen::build_top_bar() {
                              .arg(ui::colors::TEXT_PRIMARY()));
     hl->addWidget(title);
 
-    auto* subtitle = new QLabel("strategy builder · backtesting · live deployment", bar);
+    auto* subtitle = new QLabel("strategy builder · backtesting · live deployment · propfirm accountability", bar);
     subtitle->setStyleSheet(
         QString("color:%1; font-size:10px; background:transparent;").arg(ui::colors::TEXT_TERTIARY()));
     hl->addWidget(subtitle);
@@ -106,8 +113,8 @@ QWidget* AlgoTradingScreen::build_top_bar() {
     hl->addWidget(div);
 
     // Tab buttons
-    QStringList tabs   = {"BUILDER", "MY STRATEGIES", "SCANNER", "DASHBOARD"};
-    QStringList colors = {"#FF6B35", "#00E5FF", "#FFC400", "#00D66F"};
+    QStringList tabs   = {"BUILDER", "MY STRATEGIES", "SCANNER", "DASHBOARD", "PROPFIRM"};
+    QStringList colors = {"#FF6B35", "#00E5FF", "#FFC400", "#00D66F", "#d97706"};
 
     for (int i = 0; i < tabs.size(); ++i) {
         auto* btn = new QPushButton(tabs[i], bar);
@@ -176,12 +183,17 @@ void AlgoTradingScreen::on_tab_changed(int index) {
     // Refresh data when switching tabs
     if (index == 1)
         AlgoTradingService::instance().list_strategies();
-    if (index == 3)
+    if (index == 3) {
+        if (propfirm_)
+            propfirm_->stop_polling();
         AlgoTradingService::instance().list_deployments();
+    }
+    if (index == 4 && propfirm_)
+        propfirm_->start_polling();
 }
 
 void AlgoTradingScreen::update_tab_buttons() {
-    QStringList colors = {"#FF6B35", "#00E5FF", "#FFC400", "#00D66F"};
+    QStringList colors = {"#FF6B35", "#00E5FF", "#FFC400", "#00D66F", "#d97706"};
     for (int i = 0; i < tab_buttons_.size(); ++i) {
         bool active = (i == active_tab_);
         tab_buttons_[i]->setStyleSheet(

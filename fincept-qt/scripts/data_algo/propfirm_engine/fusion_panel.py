@@ -176,7 +176,7 @@ def alert_feed_payload(log_path: str, limit: int = 80) -> dict[str, Any]:
 def fusion_panel_html() -> str:
     # Inline, zero-dependency browser panel. All dynamic data is rendered through
     # textContent, never innerHTML.
-    title = html.escape("Propfirm Fusion Alert Feed")
+    title = html.escape("Fincept Propfirm ATA")
     return f"""<!doctype html>
 <html lang=\"en\">
 <head>
@@ -184,20 +184,20 @@ def fusion_panel_html() -> str:
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
 <title>{title}</title>
 <style>
-:root {{ color-scheme: dark; --bg:#07100d; --panel:#111a16; --line:#284036; --ink:#e7f5e9; --muted:#82948b; --green:#8ff0a4; --amber:#e2c56c; --rose:#ff8fa3; --blue:#89b7ff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
+:root {{ color-scheme: dark; --bg:#080808; --panel:#0a0a0a; --raised:#111111; --hover:#161616; --line:#222222; --line-bright:#333333; --ink:#e5e5e5; --muted:#808080; --dim:#525252; --accent:#d97706; --accent-dim:#78350f; --green:#16a34a; --amber:#ca8a04; --rose:#dc2626; --blue:#0891b2; font-family:'Consolas','Courier New',ui-monospace,monospace; }}
 * {{ box-sizing: border-box; }}
-html, body {{ min-height: 100%; margin: 0; background: radial-gradient(circle at 1px 1px, rgba(143,240,164,.12) 1px, transparent 1.4px), var(--bg); background-size: 10px 10px, auto; color: var(--ink); }}
+html, body {{ min-height: 100%; margin: 0; background: linear-gradient(135deg, rgba(217,119,6,.07), transparent 32%), radial-gradient(circle at 1px 1px, rgba(217,119,6,.10) 1px, transparent 1.4px), var(--bg); background-size: auto, 12px 12px; color: var(--ink); }}
 .shell {{ display: grid; gap: 14px; padding: 18px; }}
 .header {{ display:flex; justify-content:space-between; gap:14px; align-items:flex-start; padding-bottom:14px; border-bottom:1px solid var(--line); }}
 h1 {{ margin:0; font-size:18px; letter-spacing:-.03em; }}
 .sub {{ margin-top:6px; color:var(--muted); font-size:11px; line-height:1.45; text-transform:uppercase; }}
-.badge {{ border:1px solid var(--line); color:var(--green); padding:5px 8px; border-radius:999px; font-size:11px; white-space:nowrap; }}
+.badge {{ border:1px solid var(--line-bright); color:var(--accent); background:rgba(217,119,6,.08); padding:5px 8px; border-radius:2px; font-size:11px; white-space:nowrap; }}
 .stats {{ display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); }}
-.stat {{ background:#0b130f; padding:10px; min-width:0; }}
+.stat {{ background:var(--panel); padding:10px; min-width:0; }}
 .stat span {{ display:block; color:var(--muted); font-size:10px; text-transform:uppercase; }}
 .stat strong {{ display:block; margin-top:5px; font-size:15px; overflow-wrap:anywhere; }}
 .feed {{ display:grid; gap:10px; }}
-.card {{ border:1px solid var(--line); background:rgba(17,26,22,.92); padding:12px; display:grid; gap:9px; }}
+.card {{ border:1px solid var(--line); background:rgba(10,10,10,.94); padding:12px; display:grid; gap:9px; }}
 .card.accepted {{ border-left:3px solid var(--green); }}
 .card.rejected {{ border-left:3px solid var(--rose); }}
 .card.flag {{ border-left:3px solid var(--amber); }}
@@ -207,10 +207,10 @@ h1 {{ margin:0; font-size:18px; letter-spacing:-.03em; }}
 .card.flag .kind {{ color:var(--amber); }}
 .time {{ color:var(--muted); font-size:10px; }}
 .grid {{ display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:6px; }}
-.field {{ border:1px solid rgba(255,255,255,.06); padding:7px; background:#08100d; min-width:0; }}
+.field {{ border:1px solid rgba(255,255,255,.06); padding:7px; background:#080808; min-width:0; }}
 .field span {{ display:block; color:var(--muted); font-size:9px; text-transform:uppercase; }}
 .field strong {{ display:block; margin-top:4px; font-size:12px; overflow-wrap:anywhere; }}
-pre {{ margin:0; max-height:180px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; color:#c5d4cb; background:#080d0b; border:1px solid rgba(255,255,255,.06); padding:9px; font:inherit; font-size:10px; line-height:1.45; }}
+pre {{ margin:0; max-height:180px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; color:#808080; background:#080808; border:1px solid rgba(255,255,255,.06); padding:9px; font:inherit; font-size:10px; line-height:1.45; }}
 .empty {{ border:1px dashed var(--line); color:var(--muted); padding:18px; text-align:center; }}
 .footer {{ color:var(--muted); font-size:10px; line-height:1.45; border-top:1px solid var(--line); padding-top:12px; }}
 @media (max-width: 860px) {{ .stats, .grid {{ grid-template-columns:repeat(2, minmax(0,1fr)); }} .header {{ display:grid; }} }}
@@ -220,8 +220,8 @@ pre {{ margin:0; max-height:180px; overflow:auto; white-space:pre-wrap; overflow
 <main class=\"shell\">
   <header class=\"header\">
     <div>
-      <h1>Propfirm Fusion Alert Feed</h1>
-      <div class=\"sub\">Webhook alerts → sanitized local feed → Fusion Chat tab. Display-only; not an execution agent.</div>
+      <h1>Fincept Propfirm ATA</h1>
+      <div class=\"sub\">TradingView alerts → sanitized local feed → Fincept native tab / Fusion Chat. Display-only; not an execution agent.</div>
     </div>
     <div class=\"badge\" id=\"statusBadge\">checking</div>
   </header>
