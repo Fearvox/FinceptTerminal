@@ -1,9 +1,7 @@
+.env
+.env.*
 .next/
 node_modules/
-.env
-.env.local
-.env.*.local
-.vercel/
 supabase/.temp/
 *.tsbuildinfo
 npm-debug.log*
