@@ -165,7 +165,7 @@ This starts two local surfaces:
 
 | Surface | Default URL | Purpose |
 |---------|-------------|---------|
-| TradingView webhook | `http://127.0.0.1:5555/tv-signal?secret=...` | Receives alerts, writes journal rows, appends a sanitized JSONL feed |
+| TradingView webhook | `http://127.0.0.1:5555/tv-signal?secret=***` | Receives alerts, writes journal rows, appends a sanitized JSONL feed |
 | Local alert panel | `http://127.0.0.1:5556/fusion-panel` | Read-only page that polls `/alerts` and displays accepted/rejected alert facts |
 | Fincept native tab | Algo Trading → `PROPFIRM` | Qt-native Obsidian panel that polls the same local `/alerts` endpoint |
 
@@ -185,7 +185,21 @@ The standalone panel server is also available:
 python3 -m propfirm_engine.fusion_panel_server --port 5556
 ```
 
-## 10. The Leap VM MoE / ATA room
+## 10. Cloud monitor with Vercel + Supabase
+
+For always-on monitoring, use the Vercel app in `propfirm_engine/vercel-monitor/` instead of tunneling this local panel:
+
+```text
+TradingView webhook
+  → Vercel /api/tv-signal?secret=...
+  → sanitize + redact
+  → Supabase public.propfirm_alerts
+  → Vercel dashboard + /api/alerts
+```
+
+Run `propfirm_engine/vercel-monitor/supabase/schema.sql` in Supabase, set the Vercel env vars from `.env.example`, then point TradingView at the deployed `/api/tv-signal` URL. The cloud monitor has the same safety boundary: display-only, no broker calls, no order placement, no trade suggestions.
+
+## 11. The Leap VM MoE / ATA room
 
 For the May 2026 TradingView The Leap Crypto contest, run the read-only
 accountability room after trades are logged:
@@ -201,7 +215,7 @@ local ATA-style role transcript. It does not place trades or generate entries.
 
 Full notes: `propfirm_engine/README.leap_moe_room.md`.
 
-## 11. Manual corrections
+## 12. Manual corrections
 
 If a webhook row was opened but you chose not to execute on TV:
 ```bash
