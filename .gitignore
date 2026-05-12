@@ -76,6 +76,12 @@ logs/
 .env.*.local
 *.key
 *.pub
+# Defensive rules for plaintext key files without standard extensions
+# (e.g. "_Manifold API Key" — *.key glob misses files ending in literal "Key")
+_*API*Key*
+_*api*key*
+_*_key
+_*_KEY
 
 # ── Large data / ML model files ──────────────────────────────
 *.csv
