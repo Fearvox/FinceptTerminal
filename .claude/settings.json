@@ -1,0 +1,27 @@
+{
+  "enabledPlugins": {
+    "evermem@evermem": true
+  },
+  "pluginSources": {
+    "evermem": {
+      "url": "https://github.com/EverMind-AI/evermem-claude-code.git"
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd $CLAUDE_PROJECT_DIR/.claude/plugins/evermem 2>/dev/null && npm install --silent || true"
+          },
+          {
+            "type": "command",
+            "command": "export EVERMEM_API_KEY=\"$(security find-generic-password -s evermem-api -w 2>/dev/null | tr -d '\\n')\" EVERMEM_USER_ID=cloud-runner EVERMEM_AGENTIC=1 EVERMEM_GROUP_ID=fincept && if [ -z \"$EVERMEM_API_KEY\" ]; then echo '[EverMem] WARN: keychain entry evermem-api missing — run: security add-generic-password -U -s evermem-api -a \"$USER\" -w <key>'; else echo '[EverMem] cloud-runner/fincept initialized'; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

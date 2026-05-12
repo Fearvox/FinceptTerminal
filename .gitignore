@@ -113,8 +113,15 @@ dist-ssr/
 
 # ── Claude Code — never commit ───────────────────────────────
 .claude/settings.local.json
+.claude/worktrees/
+.claude/plugins/
+.claude/homunculus/
 CLAUDE.md
 fincept-qt/DESIGN_SYSTEM.md
+
+# ── Agent runtime dirs (Codex / Remember etc.) ──────────────
+.codex/
+.remember/
 
 # ── Build output (uitest) ─────────────────────────────────────
 fincept-qt/uitest/build/
