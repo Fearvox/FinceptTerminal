@@ -1,0 +1,14 @@
+# Dev/test dependencies for fincept-qt/scripts/data_algo/.
+#
+# Includes runtime deps via -r requirements.txt so a single
+# `pip install -r requirements-dev.txt` covers everything needed to
+# run the propfirm_engine test suite.
+#
+# Install:  pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# propfirm_engine/tests/*.py — pytest is the test runner; current verified
+# install is 9.0.3 on Python 3.13. Floor at >=7 because earlier major
+# versions miss some fixtures used.
+pytest>=7,<10

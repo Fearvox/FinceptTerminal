@@ -1,0 +1,18 @@
+# Runtime dependencies for fincept-qt/scripts/data_algo/.
+#
+# The scripts in this directory are otherwise stdlib-only — every scanner,
+# ingester, dashboard, and the propfirm_engine package use only modules
+# from CPython's standard library (urllib.request, sqlite3, dataclasses,
+# argparse, json, statistics, etc.). Verify with `_smoke_imports.py`.
+#
+# Targeted at Python 3.13+. Earlier 3.10/3.11 should also work since none
+# of the code uses 3.13-only features beyond what dataclasses already
+# provided, but lower bounds are not formally tested.
+#
+# Install:  pip install -r requirements.txt
+# Dev/test: pip install -r requirements-dev.txt
+
+# bmi_bulk_ingester.py:282 — lazy-imports openpyxl inside a function to
+# parse .xlsx workbooks of BMI (Fitch Solutions) macro data.
+# Locked to the 3.x line; current verified install is 3.1.5.
+openpyxl>=3.1,<4
