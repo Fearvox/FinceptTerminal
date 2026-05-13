@@ -1,10 +1,8 @@
 name: Build Qt Terminal - All Platforms
 
 on:
+  # Manual-only — release.yml handles tag builds / installer generation.
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 env:
   BUILD_TYPE: Release
@@ -52,7 +50,7 @@ jobs:
             artifact: FinceptTerminal-macOS-arm64
             exe: FinceptTerminal
             qt_arch: clang_64
-            cmake_extra: "-DCMAKE_OSX_ARCHITECTURES=arm64"
+            cmake_extra: "-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0"
 
           # ---- macOS x64 (Intel) ----
           # Cross-compiled on ARM64 runner. CMakeLists.txt auto-disables GGML_NATIVE
@@ -63,7 +61,7 @@ jobs:
             artifact: FinceptTerminal-macOS-x64
             exe: FinceptTerminal
             qt_arch: clang_64
-            cmake_extra: "-DCMAKE_OSX_ARCHITECTURES=x86_64"
+            cmake_extra: "-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0"
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.platform }} ${{ matrix.arch }}
@@ -84,14 +82,18 @@ jobs:
           update-package-index: true
 
       # ---- System dependencies (Linux) ----
+      # Ubuntu 22.04's default g++ is 11.4, but CMakeLists.txt requires GCC 12.3+.
+      # Install gcc-12/g++-12 from the Ubuntu Toolchain PPA (pre-enabled on
+      # ubuntu-22.04 runners) and pin it via CC/CXX for the rest of the job.
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo add-apt-repository universe -y
           sudo apt-get update -qq
           sudo apt-get install -y \
-            cmake ninja-build g++ \
+            cmake ninja-build gcc-12 g++-12 \
             libssl-dev \
+            libsecret-1-dev \
             qt6-base-dev qt6-base-private-dev \
             qt6-tools-dev qt6-tools-dev-tools \
             libqt6charts6-dev libqt6websockets6-dev \
@@ -103,6 +105,8 @@ jobs:
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
             libxcb-xinerama0 libxcb-xkb1 \
             pkg-config zip
+          echo "CC=gcc-12"  >> "$GITHUB_ENV"
+          echo "CXX=g++-12" >> "$GITHUB_ENV"
 
       # ---- OpenSSL dev libs (Windows) ----
       # windows-2022 runners ship only the "Light" OpenSSL (no .lib files).
@@ -493,7 +497,7 @@ jobs:
           # Copy app resources and Python analytics scripts
           # ----------------------------------------------------------------
           cp -r resources dist/resources 2>/dev/null || true
-          cp -r scripts   dist/scripts   2>/dev/null || true
+          bash .github/scripts/sync_scripts.sh scripts dist/scripts
 
           # ----------------------------------------------------------------
           # Final diagnostic — list everything that will be zipped
@@ -551,7 +555,7 @@ jobs:
           # ── Stage resources INSIDE the bundle (not as siblings) ───────────
           mkdir -p "${APP_BUNDLE}/Contents/Resources"
           cp -r resources "${APP_BUNDLE}/Contents/Resources/" 2>/dev/null || true
-          cp -r scripts   "${APP_BUNDLE}/Contents/Resources/scripts" 2>/dev/null || true
+          bash .github/scripts/sync_scripts.sh scripts "${APP_BUNDLE}/Contents/Resources/scripts"
 
           # ── Embed Python.framework (tag builds only — skip on push) ───────
           if [ "$IS_TAG" = "true" ]; then
@@ -638,7 +642,7 @@ jobs:
 
           # Copy resources and scripts inside AppDir
           cp -r resources AppDir/usr/bin/resources 2>/dev/null || true
-          cp -r scripts   AppDir/usr/bin/scripts   2>/dev/null || true
+          bash .github/scripts/sync_scripts.sh scripts AppDir/usr/bin/scripts
 
           # Desktop entry (required by linuxdeploy)
           cat > AppDir/usr/share/applications/fincept-terminal.desktop <<'EOF'
@@ -650,17 +654,33 @@ jobs:
           Categories=Finance;
           EOF
 
-          # App icon (use existing .ico or create placeholder)
+          # App icon — use real icon if present, otherwise generate a valid
+          # 256×256 PNG via Python/Pillow (always present on ubuntu-latest runners).
+          # We avoid ImageMagick because its default security policy and
+          # missing-font fallbacks produced zero-byte PNGs that failed libpng's
+          # CRC check in linuxdeploy. `python3 -c` sidesteps the YAML-indented
+          # heredoc trap (Python rejects the leading spaces as IndentationError).
+          ICON_DEST="AppDir/usr/share/icons/hicolor/256x256/apps/fincept-terminal.png"
           if [ -f "resources/icons/app_icon_256.png" ]; then
-            cp resources/icons/app_icon_256.png AppDir/usr/share/icons/hicolor/256x256/apps/fincept-terminal.png
+            cp resources/icons/app_icon_256.png "${ICON_DEST}"
           else
-            # Generate a minimal placeholder icon with ImageMagick
-            convert -size 256x256 xc:#1a1a2e -fill white \
-              -font DejaVu-Sans -pointsize 48 -gravity center \
-              -annotate 0 "FT" AppDir/usr/share/icons/hicolor/256x256/apps/fincept-terminal.png 2>/dev/null || \
-            cp /usr/share/icons/hicolor/256x256/apps/firefox.png \
-               AppDir/usr/share/icons/hicolor/256x256/apps/fincept-terminal.png 2>/dev/null || \
-            touch AppDir/usr/share/icons/hicolor/256x256/apps/fincept-terminal.png
+            python3 -c 'import sys; from PIL import Image, ImageDraw, ImageFont; img=Image.new("RGBA",(256,256),(26,26,46,255)); d=ImageDraw.Draw(img); f=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",96) if __import__("os").path.exists("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf") else ImageFont.load_default(); d.text((128,128),"FT",fill=(255,255,255,255),font=f,anchor="mm"); img.save(sys.argv[1],"PNG")' "${ICON_DEST}"
+          fi
+          # Verify the file is a valid PNG before handing it to linuxdeploy.
+          file "${ICON_DEST}"
+          [ -s "${ICON_DEST}" ] || { echo "::error::Icon is empty or missing"; exit 1; }
+
+          # ── Strip unused Qt SQL driver plugins ───────────────────────────
+          # We only use SQLite. linuxdeploy-plugin-qt walks every plugin in
+          # Qt's sqldrivers/ folder and tries to resolve its dependencies —
+          # the Mimer plugin pulls in libmimerapi.so, which isn't installed
+          # on the runner and causes the deploy step to fail.
+          QT_SQLDRIVERS="${QT_ROOT_DIR:-$(dirname $(which qmake6 2>/dev/null || which qmake))/..}/plugins/sqldrivers"
+          if [ -d "${QT_SQLDRIVERS}" ]; then
+            rm -f "${QT_SQLDRIVERS}/libqsqlmimer.so" \
+                  "${QT_SQLDRIVERS}/libqsqlodbc.so" \
+                  "${QT_SQLDRIVERS}/libqsqlpsql.so" \
+                  "${QT_SQLDRIVERS}/libqsqlmysql.so"
           fi
 
           # ── Build AppImage ────────────────────────────────────────────────
@@ -778,7 +798,7 @@ jobs:
           lipo -create "$ARM64_BIN" "$X64_BIN" -output dist/FinceptTerminal
           chmod +x dist/FinceptTerminal
           cp -r arm64/resources dist/resources 2>/dev/null || true
-          cp -r arm64/scripts dist/scripts 2>/dev/null || true
+          bash .github/scripts/sync_scripts.sh arm64/scripts dist/scripts
           file dist/FinceptTerminal
           lipo -info dist/FinceptTerminal
           ls -lh dist/FinceptTerminal

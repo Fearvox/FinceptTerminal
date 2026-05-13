@@ -3,6 +3,11 @@
 
 #include "core/logging/Logger.h"
 #include "core/session/ScreenStateManager.h"
+#include "core/symbol/SymbolContext.h"
+#include "core/symbol/SymbolDragSource.h"
+
+#include <QApplication>
+#include <QMouseEvent>
 #include "screens/equity_trading/AccountManagementDialog.h"
 #include "screens/equity_trading/BroadcastOrderDialog.h"
 #include "screens/equity_trading/EquityBottomPanel.h"
@@ -69,6 +74,14 @@ EquityTradingScreen::EquityTradingScreen(QWidget* parent) : QWidget(parent) {
     setup_timers();
     connect_data_stream_signals();
     WorkspaceManager::instance().register_participant("equity_trading", this);
+
+    // Accept symbol drops anywhere on the screen — route through the
+    // existing selection path so sub-panels resync and the linked group is
+    // published to.
+    symbol_dnd::installDropFilter(this, [this](const SymbolRef& ref, SymbolGroup) {
+        if (ref.is_valid())
+            on_symbol_selected(ref.symbol);
+    });
 }
 
 EquityTradingScreen::~EquityTradingScreen() {
@@ -760,6 +773,14 @@ void EquityTradingScreen::switch_symbol(const QString& symbol) {
     order_entry_->set_symbol(symbol);
     watchlist_->set_active_symbol(symbol);
 
+    // Publish to the linked group so other panels (Watchlist, EquityResearch,
+    // News, Derivatives, SurfaceAnalytics) follow. `this` as source suppresses
+    // the echo back into this screen.
+    if (link_group_ != SymbolGroup::None) {
+        SymbolContext::instance().set_group_symbol(
+            link_group_, SymbolRef::equity(symbol, selected_exchange_), this);
+    }
+
     auto* stream = DataStreamManager::instance().stream_for(focused_account_id_);
     if (stream) {
         stream->set_selected_symbol(symbol, selected_exchange_);
@@ -947,7 +968,7 @@ void EquityTradingScreen::on_order_submitted(const UnifiedOrder& order) {
         const QString acct_id = focused_account_id_;
         QPointer<EquityTradingScreen> self = this;
         auto order_copy = order;
-        QtConcurrent::run([self, acct_id, order_copy]() {
+        (void)QtConcurrent::run([self, acct_id, order_copy]() {
             if (!self)
                 return;
             auto result = UnifiedTrading::instance().place_order(acct_id, order_copy);
@@ -997,7 +1018,7 @@ void EquityTradingScreen::on_cancel_order(const QString& order_id) {
     } else {
         const QString acct_id = focused_account_id_;
         QPointer<EquityTradingScreen> self = this;
-        QtConcurrent::run([self, acct_id, order_id]() {
+        (void)QtConcurrent::run([self, acct_id, order_id]() {
             if (!self)
                 return;
             UnifiedTrading::instance().cancel_order(acct_id, order_id);
@@ -1018,7 +1039,7 @@ void EquityTradingScreen::refresh_candles() {
 void EquityTradingScreen::async_modify_order(const QString& order_id, double qty, double price) {
     const QString acct_id = focused_account_id_;
     QPointer<EquityTradingScreen> self = this;
-    QtConcurrent::run([self, acct_id, order_id, qty, price]() {
+    (void)QtConcurrent::run([self, acct_id, order_id, qty, price]() {
         if (!self)
             return;
         QJsonObject mods;
@@ -1247,8 +1268,14 @@ void EquityTradingScreen::on_import_holdings_requested(const QVector<trading::Br
     QObject::disconnect(conn);
 
     // Collect selected rows with their (possibly edited) yfinance tickers.
+    // We carry the broker-native pair (symbol + exchange) alongside the
+    // yfinance form so PortfolioService can route live quote calls through
+    // the broker instead of yfinance for portfolios linked to a connected
+    // account. See migration v022.
     struct ImportRow {
-        QString symbol;
+        QString symbol;          // yfinance-format ("RELIANCE.NS"). Canonical key.
+        QString broker_symbol;   // broker-native ("RELIANCE")
+        QString exchange;        // "NSE" / "BSE" / etc.
         double quantity = 0;
         double avg_price = 0;
     };
@@ -1262,7 +1289,11 @@ void EquityTradingScreen::on_import_holdings_requested(const QVector<trading::Br
         const QString yf = table->item(r, 3)->text().trimmed().toUpper();
         if (yf.isEmpty())
             continue;
-        rows.push_back({yf, holdings[r].quantity, holdings[r].avg_price});
+        rows.push_back({yf,
+                        holdings[r].symbol,    // broker-native ticker as returned by broker
+                        holdings[r].exchange,
+                        holdings[r].quantity,
+                        holdings[r].avg_price});
     }
     if (rows.isEmpty()) {
         QMessageBox::information(this, "Import Holdings", "Nothing selected to import.");
@@ -1275,7 +1306,8 @@ void EquityTradingScreen::on_import_holdings_requested(const QVector<trading::Br
         for (const auto& row : rows) {
             if (row.quantity <= 0 || row.symbol.isEmpty())
                 continue;
-            svc.add_asset(portfolio_id, row.symbol, row.quantity, row.avg_price, today);
+            svc.add_asset(portfolio_id, row.symbol, row.quantity, row.avg_price, today,
+                          row.broker_symbol, row.exchange);
         }
     };
 
@@ -1302,7 +1334,11 @@ void EquityTradingScreen::on_import_holdings_requested(const QVector<trading::Br
                                                          .arg(count)
                                                          .arg(p.name));
                         });
-        ps.create_portfolio(name, account.display_name, currency, "Imported from " + broker_id.toUpper());
+        // Stamp the new portfolio with the broker account_id so live quotes
+        // route through the broker (PortfolioService::build_summary).
+        ps.create_portfolio(name, account.display_name, currency,
+                            "Imported from " + broker_id.toUpper(),
+                            account.account_id);
     } else {
         const QString pid = existing_combo->currentData().toString();
         if (pid.isEmpty()) {
@@ -1313,6 +1349,21 @@ void EquityTradingScreen::on_import_holdings_requested(const QVector<trading::Br
         QMessageBox::information(this, "Import Holdings",
                                  QString("Imported %1 holdings.").arg(rows.size()));
     }
+}
+
+// ── IGroupLinked ─────────────────────────────────────────────────────────────
+
+void EquityTradingScreen::on_group_symbol_changed(const SymbolRef& ref) {
+    if (!ref.is_valid() || ref.symbol == selected_symbol_)
+        return;
+    // Route through the existing selection path so sub-panels sync.
+    on_symbol_selected(ref.symbol);
+}
+
+SymbolRef EquityTradingScreen::current_symbol() const {
+    if (selected_symbol_.isEmpty())
+        return {};
+    return SymbolRef::equity(selected_symbol_, selected_exchange_);
 }
 
 } // namespace fincept::screens

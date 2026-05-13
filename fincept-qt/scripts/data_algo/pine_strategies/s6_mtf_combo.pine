@@ -1,0 +1,19 @@
+//@version=6
+strategy("S6_MTF_Combo", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.1)
+// Higher TF bias (4x current TF)
+htf_ema = request.security(syminfo.tickerid, timeframe.multiplier > 0 ? str.tostring(timeframe.multiplier * 4) : "240", ta.ema(close, 50))
+plot(htf_ema, color=color.purple, title="HTF EMA")
+
+// Current TF entry (EMA 9)
+ltf_ema = ta.ema(close, 9)
+plot(ltf_ema, color=color.yellow)
+
+bullBias = close > htf_ema
+bearBias = close < htf_ema
+
+if bullBias and ta.crossover(close, ltf_ema)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("L_Exit", "Long", loss=close*0.015/syminfo.mintick, profit=close*0.03/syminfo.mintick)
+if bearBias and ta.crossunder(close, ltf_ema)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("S_Exit", "Short", loss=close*0.015/syminfo.mintick, profit=close*0.03/syminfo.mintick)

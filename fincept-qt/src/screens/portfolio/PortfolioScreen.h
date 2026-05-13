@@ -1,5 +1,6 @@
 // src/screens/portfolio/PortfolioScreen.h
 #pragma once
+#include "core/symbol/IGroupLinked.h"
 #include "screens/IStatefulScreen.h"
 #include "screens/portfolio/PortfolioTypes.h"
 
@@ -26,17 +27,26 @@ class PortfolioTxnPanel;
 class PortfolioOrderPanel;
 class PortfolioDetailWrapper;
 class PortfolioFFNView;
-class PortfolioAiPanel;
-class PortfolioAgentPanel;
+class PortfolioInsightsPanel;
 
-class PortfolioScreen : public QWidget, public IStatefulScreen {
+class PortfolioScreen : public QWidget, public IStatefulScreen, public IGroupLinked {
     Q_OBJECT
+    Q_INTERFACES(fincept::IGroupLinked)
   public:
     explicit PortfolioScreen(QWidget* parent = nullptr);
 
     void restore_state(const QVariantMap& state) override;
     QVariantMap save_state() const override;
     QString state_key() const override { return "portfolio"; }
+
+    // IGroupLinked — active symbol = currently selected holding. Receiving
+    // a group symbol scrolls/selects that holding if it exists in the
+    // current portfolio; symbols not held are silently ignored (no synthetic
+    // "phantom" selection).
+    void set_group(SymbolGroup g) override { link_group_ = g; }
+    SymbolGroup group() const override { return link_group_; }
+    void on_group_symbol_changed(const SymbolRef& ref) override;
+    SymbolRef current_symbol() const override;
 
   protected:
     void showEvent(QShowEvent* event) override;
@@ -96,8 +106,8 @@ class PortfolioScreen : public QWidget, public IStatefulScreen {
     PortfolioOrderPanel* order_panel_ = nullptr;
     PortfolioDetailWrapper* detail_wrapper_ = nullptr;
     PortfolioFFNView* ffn_view_ = nullptr;
-    PortfolioAiPanel* ai_panel_ = nullptr;
-    PortfolioAgentPanel* agent_panel_ = nullptr;
+    PortfolioInsightsPanel* insights_panel_ = nullptr;
+    QWidget* insights_scrim_ = nullptr;
 
     // State
     QVector<portfolio::Portfolio> portfolios_;
@@ -119,6 +129,9 @@ class PortfolioScreen : public QWidget, public IStatefulScreen {
 
     // Positions section header — count badge updates with holdings
     QLabel* positions_count_label_ = nullptr;
+
+    // Symbol-group link (None when unlinked).
+    SymbolGroup link_group_ = SymbolGroup::None;
 };
 
 } // namespace fincept::screens

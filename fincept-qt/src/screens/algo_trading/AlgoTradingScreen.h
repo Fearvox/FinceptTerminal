@@ -17,9 +17,10 @@ class StrategyBuilderPanel;
 class StrategyListPanel;
 class ScannerPanel;
 class DeploymentDashboard;
+class PropfirmPanel;
 
-/// Algo Trading screen — 4-tab trading system builder.
-/// Tabs: Builder, My Strategies, Scanner, Dashboard
+/// Algo Trading screen — 5-tab trading system builder.
+/// Tabs: Builder, My Strategies, Scanner, Dashboard, Propfirm
 class AlgoTradingScreen : public QWidget, public IStatefulScreen {
     Q_OBJECT
   public:
@@ -48,6 +49,7 @@ class AlgoTradingScreen : public QWidget, public IStatefulScreen {
     StrategyListPanel* strategies_ = nullptr;
     ScannerPanel* scanner_ = nullptr;
     DeploymentDashboard* dashboard_ = nullptr;
+    PropfirmPanel* propfirm_ = nullptr;
 
     QVector<QPushButton*> tab_buttons_;
     int active_tab_ = 0;

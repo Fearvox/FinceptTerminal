@@ -1,0 +1,15 @@
+//@version=6
+strategy("S4_Momentum_MACD", overlay=false, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.1)
+[macdLine, signalLine, hist] = ta.macd(close, 12, 26, 9)
+ema_trend = ta.ema(close, 200)
+plot(hist, style=plot.style_histogram, color=hist > 0 ? color.green : color.red)
+
+longCond = ta.crossover(macdLine, signalLine) and close > ema_trend
+shortCond = ta.crossunder(macdLine, signalLine) and close < ema_trend
+
+if longCond
+    strategy.entry("Long", strategy.long)
+    strategy.exit("L_Exit", "Long", loss=close*0.03/syminfo.mintick, profit=close*0.06/syminfo.mintick)
+if shortCond
+    strategy.entry("Short", strategy.short)
+    strategy.exit("S_Exit", "Short", loss=close*0.03/syminfo.mintick, profit=close*0.06/syminfo.mintick)

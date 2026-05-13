@@ -28,7 +28,7 @@ info() { echo -e "  ${YELLOW}$1${NC}"; }
 
 echo ""
 echo "================================================"
-echo "  Fincept Terminal v4.0.2 — Setup"
+echo "  Fincept Terminal v4.0.1 — Setup"
 echo "  Pinned: Qt ${QT_VERSION} | CMake ${CMAKE_MIN}+ | Python ${PYTHON_MIN}+"
 [ "$CI_MODE" = true ] && echo "  (CI mode — skipping interactive steps)"
 echo "================================================"
@@ -38,7 +38,7 @@ echo ""
 OS="$(uname -s)"
 case "$OS" in
     Linux*)  PLATFORM="linux" ; QT_KIT="gcc_64"     ; PRESET="linux-release" ;;
-    Darwin*) PLATFORM="macos" ; QT_KIT="clang_64"   ; PRESET="macos-release" ;;
+    Darwin*) PLATFORM="macos" ; QT_KIT="macos"      ; PRESET="macos-release" ;;
     *)       fail "Unsupported OS: $OS" ;;
 esac
 echo "Platform: $OS"
@@ -53,22 +53,45 @@ version_ge() {
 # ── Step 1: System dependencies (build tools only) ──────────
 echo "[1/7] Installing system build tools..."
 if [ "$PLATFORM" = "linux" ]; then
-    command -v apt-get &>/dev/null || fail "apt-get not found. Install cmake / ninja-build / g++ / python3.11 / python3-pip manually."
-    sudo apt-get update -qq
-    sudo apt-get install -y --no-install-recommends \
-        git cmake ninja-build g++ \
-        python3 python3-pip python3-venv \
-        libgl1-mesa-dev libglu1-mesa-dev \
-        libxkbcommon-dev libxkbcommon-x11-dev \
-        libfontconfig1 libdbus-1-3 \
-        pkg-config curl
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+            git cmake ninja-build g++ \
+            python3 python3-pip python3-venv \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig1 libdbus-1-3 \
+            libssl-dev \
+            libxcb-cursor0 \
+            libsecret-1-dev \
+            pkg-config curl
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -Sy --noconfirm --needed \
+            base-devel git cmake ninja \
+            python python-pip \
+            mesa glu libxkbcommon \
+            fontconfig dbus \
+            libsecret \
+            pkgconf curl
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y \
+            git cmake ninja-build gcc-c++ \
+            python3 python3-pip python3-virtualenv \
+            mesa-libGL-devel mesa-libGLU-devel \
+            libxkbcommon-devel \
+            fontconfig dbus-libs \
+            libsecret-devel \
+            pkgconfig curl
+    else
+        info "No recognised package manager found. Ensure cmake, ninja, g++, python3, and Qt build dependencies are installed manually."
+    fi
 elif [ "$PLATFORM" = "macos" ]; then
     if ! command -v brew &>/dev/null; then
         [ "$CI_MODE" = true ] && fail "Homebrew not found in CI environment."
         info "Homebrew not found. Installing..."
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     fi
-    brew install cmake ninja python@3.11
+    brew install cmake ninja python@3.11 openssl@3 yt-dlp
 fi
 ok
 
@@ -119,18 +142,27 @@ else
     info "Installing Qt ${QT_VERSION} via aqtinstall to $QT_INSTALL_ROOT ..."
     # aqtinstall is a stable community tool that downloads exact Qt versions
     # from the official Qt mirror. Much smaller than Qt Online Installer and scriptable.
-    "$PYTHON" -m pip install --user --quiet --upgrade aqtinstall
-    AQT="$("$PYTHON" -m pip show aqtinstall >/dev/null 2>&1 && "$PYTHON" -m aqt help >/dev/null 2>&1 && echo "$PYTHON -m aqt" || echo "")"
-    [ -n "$AQT" ] || fail "aqtinstall did not install correctly."
+    # Use an isolated venv to avoid PEP 668 "externally-managed-environment" errors
+    # on Arch Linux, Ubuntu 23.04+, and other distros that block global pip installs.
+    AQT_VENV="$SCRIPT_DIR/.aqt-venv"
+    "$PYTHON" -m venv "$AQT_VENV"
+    "$AQT_VENV/bin/pip" install --quiet --upgrade aqtinstall
+    AQT="$AQT_VENV/bin/aqt"
+    [ -x "$AQT" ] || fail "aqtinstall did not install correctly."
     # Qt host/target/arch
+    # AQT_ARCH is the argument passed to aqt; QT_KIT is the subdirectory aqtinstall
+    # actually creates on disk. They differ on every platform — aqtinstall maps the
+    # arch argument to the on-disk dir internally:
+    #   Linux : aqt arg "linux_gcc_64" → on-disk "gcc_64"
+    #   macOS : aqt arg "clang_64"     → on-disk "macos"   (Qt >= 6.1.2 only)
     if [ "$PLATFORM" = "linux" ]; then
-        AQT_HOST="linux"   ; AQT_TARGET="desktop" ; AQT_ARCH="gcc_64"
+        AQT_HOST="linux"   ; AQT_TARGET="desktop" ; AQT_ARCH="linux_gcc_64"
     else
         AQT_HOST="mac"     ; AQT_TARGET="desktop" ; AQT_ARCH="clang_64"
     fi
     # Modules required to compile Fincept (match find_package COMPONENTS)
     AQT_MODULES="qtcharts qtwebsockets qtmultimedia qtspeech"
-    $AQT install-qt "$AQT_HOST" "$AQT_TARGET" "$QT_VERSION" "$AQT_ARCH" \
+    "$AQT" install-qt "$AQT_HOST" "$AQT_TARGET" "$QT_VERSION" "$AQT_ARCH" \
         --outputdir "$QT_INSTALL_ROOT" \
         --modules $AQT_MODULES \
         || fail "aqtinstall failed. Check internet connection or install Qt ${QT_VERSION} manually from https://www.qt.io/download-qt-installer"
@@ -148,7 +180,12 @@ cd "$APP_DIR"
 echo "[6/7] Configuring (preset: $PRESET)..."
 # Override the preset's default CMAKE_PREFIX_PATH with the one we just set,
 # so the build picks up the aqtinstall location rather than ~/Qt/6.8.3/...
-cmake --preset "$PRESET" -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
+EXTRA_ARGS=""
+if [ "$PLATFORM" = "macos" ] && [ -d "/opt/homebrew/opt/openssl@3" ]; then
+    EXTRA_ARGS="-DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3"
+fi
+
+cmake --preset "$PRESET" -DCMAKE_PREFIX_PATH="$QT_PREFIX" $EXTRA_ARGS \
     || fail "CMake configure failed. See error above."
 ok
 

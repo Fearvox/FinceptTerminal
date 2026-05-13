@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QHash>
 #include <QMutex>
+#include <QSet>
 #include <QObject>
 #include <QPointer>
 #include <QTimer>
@@ -22,8 +23,12 @@ class PortfolioService : public QObject {
 
     // ── Portfolio CRUD ───────────────────────────────────────────────────────
     void load_portfolios();
+    /// `broker_account_id` links the new portfolio to a broker account so
+    /// PortfolioService routes live quotes via that broker instead of yfinance.
+    /// Empty for manual / JSON imports — yfinance fallback applies.
     void create_portfolio(const QString& name, const QString& owner, const QString& currency,
-                          const QString& description = {});
+                          const QString& description = {},
+                          const QString& broker_account_id = {});
     void delete_portfolio(const QString& id);
 
     // ── Summary (assets + live quotes) ───────────────────────────────────────
@@ -31,8 +36,12 @@ class PortfolioService : public QObject {
     void refresh_summary(const QString& portfolio_id); // invalidates cache first
 
     // ── Asset operations ─────────────────────────────────────────────────────
+    /// `broker_symbol`+`exchange` are stored alongside the canonical
+    /// yfinance-format `symbol` so broker quote calls can use the native
+    /// pair. Both empty for manual / JSON imports.
     void add_asset(const QString& portfolio_id, const QString& symbol, double qty, double price,
-                   const QString& date = {});
+                   const QString& date = {},
+                   const QString& broker_symbol = {}, const QString& exchange = {});
     void sell_asset(const QString& portfolio_id, const QString& symbol, double qty, double price,
                     const QString& date = {});
 
@@ -51,9 +60,16 @@ class PortfolioService : public QObject {
     /// correlation matrix. Result emitted via correlation_computed().
     void fetch_correlation(const QStringList& symbols);
 
-    // ── SPY benchmark data ────────────────────────────────────────────────────
-    /// Fetch SPY daily closes for the given period string (e.g. "1y", "6mo").
-    /// Emits spy_history_loaded(dates, closes).
+    // ── Benchmark data ───────────────────────────────────────────────────────
+    /// Fetch daily closes for an arbitrary benchmark ticker (defaults to SPY
+    /// for backward compatibility). Emits benchmark_history_loaded(symbol, ...)
+    /// AND the legacy spy_history_loaded(...) so older consumers keep working.
+    void fetch_benchmark_history(const QString& symbol = "SPY", const QString& period = "1y");
+    /// Convenience wrapper: pick a default benchmark from a portfolio currency
+    /// (CAD → ^GSPTSE, USD → SPY, GBP → ^FTSE, EUR → ^STOXX50E, AUD → ^AXJO,
+    /// INR → ^NSEI). Falls back to SPY for unknown currencies.
+    static QString default_benchmark_for_currency(const QString& currency);
+    /// Legacy shim — calls fetch_benchmark_history("SPY", period).
     void fetch_spy_history(const QString& period = "1y");
 
     // ── Risk-free rate ────────────────────────────────────────────────────────
@@ -71,6 +87,15 @@ class PortfolioService : public QObject {
 
     // ── Snapshots (performance history) ─────────────────────────────────────
     void load_snapshots(const QString& portfolio_id, int days = 365);
+
+    /// Reconstruct daily NAV from yfinance OHLC for the current holdings and
+    /// upsert one row per trading day into portfolio_snapshots. This is what
+    /// gives Beta and MDD a real time series on a freshly imported portfolio
+    /// — without it both metrics show "—" until the user keeps the app open
+    /// across enough days for daily snapshots to accumulate.
+    /// Period: e.g. "1mo" / "6mo" / "1y" / "5y" (yfinance period strings).
+    /// Emits history_backfilled(portfolio_id, point_count) on success.
+    void backfill_history(const QString& portfolio_id, const QString& period = "1y");
 
     // ── Cache control ────────────────────────────────────────────────────────
     void invalidate_cache(const QString& portfolio_id);
@@ -99,16 +124,44 @@ class PortfolioService : public QObject {
     void correlation_computed(QHash<QString, double> matrix);
 
     /// SPY daily close history: parallel vectors of ISO date strings and prices.
+    /// Kept for back-compat — also fired whenever benchmark_history_loaded fires
+    /// with symbol == "SPY" so existing consumers don't break.
     void spy_history_loaded(QStringList dates, QVector<double> closes);
+
+    /// Generalised benchmark history: includes the symbol so chart consumers
+    /// can label the overlay correctly when a non-SPY benchmark is requested.
+    void benchmark_history_loaded(QString symbol, QStringList dates, QVector<double> closes);
 
     /// Current 10-year risk-free rate as annual decimal (e.g. 0.043 = 4.3%).
     void risk_free_rate_loaded(double rate);
+
+    /// Fired when backfill_history finishes. point_count is the number of
+    /// trading days written (0 on failure).
+    void history_backfilled(QString portfolio_id, int point_count);
 
   private:
     PortfolioService();
 
     void build_summary(const QString& portfolio_id, const QVector<portfolio::PortfolioAsset>& assets,
                        const portfolio::Portfolio& portfolio);
+
+    /// Common "I have quotes, build the summary and emit" path used by both
+    /// the broker and yfinance routes. quote_map is keyed by the asset's
+    /// canonical (yfinance) `symbol` field.
+    void finalize_summary(const QString& portfolio_id,
+                          const QVector<portfolio::PortfolioAsset>& assets,
+                          const portfolio::Portfolio& portfolio,
+                          const QHash<QString, QuoteData>& quote_map);
+
+    /// Try to fetch live quotes via the broker linked to `portfolio.broker_account_id`.
+    /// On success, calls finalize_summary with broker-sourced QuoteData.
+    /// On any failure (no account, disconnected, broker null, API error),
+    /// silently falls back to the yfinance path. Returns true if the broker
+    /// path was attempted (even if it ultimately failed); false if we should
+    /// go straight to yfinance.
+    bool try_broker_quotes(const QString& portfolio_id,
+                           const QVector<portfolio::PortfolioAsset>& assets,
+                           const portfolio::Portfolio& portfolio);
 
     // ── Summary cache (P11) ──────────────────────────────────────────────────
     // In-memory (not CacheManager) intentionally: PortfolioSummary holds nested
@@ -124,11 +177,18 @@ class PortfolioService : public QObject {
     static constexpr int kCacheTtlSec = 300; // 5 minutes
 
     // ── SPY cache (for OLS beta in compute_metrics) ──────────────────────────
+    // Beta is always computed against SPY regardless of which benchmark is
+    // shown on the chart, so the cache keys to "SPY" specifically.
     QStringList spy_dates_cache_;
     QVector<double> spy_closes_cache_;
 
     // ── Risk-free rate cache (annual decimal, e.g. 0.043) ────────────────────
     double rf_rate_ = 0.04; // default 4% until FRED responds
+
+    // ── Backfill state ───────────────────────────────────────────────────────
+    // Per-portfolio guard so compute_metrics doesn't kick off backfill on
+    // every refresh tick. Cleared on app restart — that's the explicit retry.
+    QSet<QString> backfill_attempted_;
 };
 
 } // namespace fincept::services

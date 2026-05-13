@@ -5,6 +5,7 @@
 // Streaming via QNetworkReply::readyRead + SSE parsing.
 
 #include "core/result/Result.h"
+#include "mcp/McpTypes.h"
 #include "storage/repositories/LlmProfileRepository.h"
 
 #include <QJsonArray>
@@ -26,7 +27,7 @@ namespace fincept::ai_chat {
 inline bool provider_supports_streaming(const QString& provider) {
     return provider == "openai" || provider == "anthropic" || provider == "gemini" || provider == "google" ||
            provider == "groq" || provider == "deepseek" || provider == "openrouter" || provider == "minimax" ||
-           provider == "ollama" || provider == "fincept";
+           provider == "kimi" || provider == "ollama" || provider == "xai" || provider == "fincept";
 }
 
 inline bool provider_requires_api_key(const QString& provider) {
@@ -65,14 +66,35 @@ class LlmService : public QObject {
     LlmResponse chat(const QString& user_message, const std::vector<ConversationMessage>& history,
                      bool use_tools = true);
 
+    // Per-request tool policy. Replaces the legacy `bool use_tools` so callers
+    // can opt into the common middle ground (tools enabled but navigation
+    // tools hidden — used by the floating bubble so the model can still hit
+    // benign tools like add_to_watchlist without yanking the user out of
+    // their current screen).
+    //
+    // Values:
+    //   All           — every tool advertised (AI Chat tab default).
+    //   NoNavigation  — drop the `navigation` category (floating bubble).
+    //   None          — no tools attached at all (legacy use_tools=false).
+    enum class ToolPolicy { All, NoNavigation, None };
+
     // Streaming — launches background thread; on_chunk called on that thread.
     // Emit finished_streaming(response) when done to get result on UI thread.
-    // use_tools: when false, disables MCP tool execution for this request
     void chat_streaming(const QString& user_message, const std::vector<ConversationMessage>& history,
-                        StreamCallback on_chunk, bool use_tools = true);
+                        StreamCallback on_chunk, ToolPolicy policy = ToolPolicy::All);
+
+    // Back-compat overload — `use_tools=false` maps to ToolPolicy::None,
+    // `true` maps to ToolPolicy::All. Prefer the enum form for new callers.
+    void chat_streaming(const QString& user_message, const std::vector<ConversationMessage>& history,
+                        StreamCallback on_chunk, bool use_tools);
 
     // Reload config from DB (call after user changes LLM settings)
     void reload_config();
+
+    // (Per-request ToolFilter setters removed — superseded by Tool RAG
+    // tool.list / Tier-0 advertisement model. The internal tool_filter_
+    // field stays default-constructed; an empty filter is the signal that
+    // tells McpService::format_tools_for_openai to engage Tier-0 mode.)
 
     // ── Active config accessors (AI Chat context) ─────────────────────────────
     QString active_provider() const;
@@ -122,6 +144,10 @@ class LlmService : public QObject {
     mutable bool tools_enabled_ = true;
     mutable bool config_loaded_ = false;
 
+    // Phase 6 wiring: scopes the tool catalogue per-request. Empty = full
+    // catalogue. Read inside the build_*_request paths under mutex_.
+    mcp::ToolFilter tool_filter_;
+
     void ensure_config() const;
 
     // Request builders → QJsonObject
@@ -135,6 +161,14 @@ class LlmService : public QObject {
 
     QString get_endpoint_url() const;
     QMap<QString, QString> get_headers() const;
+
+    /// Resolve the max output tokens for a request. Order:
+    ///   1. user-set max_tokens (max_tokens_ > 0) → use it, but clamp to
+    ///      the model's published cap so we don't get a 400 from the API.
+    ///   2. model's published cap from ModelCatalog.
+    ///   3. conservative fallback (8192).
+    /// Called with mutex_ held.
+    int resolved_max_tokens() const;
 
     // Synchronous HTTP helpers (use QNetworkAccessManager + QEventLoop)
     // Must be called from a background thread.

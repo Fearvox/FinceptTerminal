@@ -6,6 +6,7 @@
 #include "ai_chat/LlmService.h"
 #include "auth/InactivityGuard.h"
 #include "auth/PinManager.h"
+#include "auth/SecurityAuditLog.h"
 #include "core/config/AppConfig.h"
 #include "core/config/AppPaths.h"
 #include "core/config/ProfileManager.h"
@@ -17,7 +18,11 @@
 #include "screens/settings/LlmConfigSection.h"
 #include "screens/settings/McpServersSection.h"
 #include "screens/settings/PythonEnvSection.h"
+#include "screens/settings/VoiceConfigSection.h"
 #include "services/notifications/NotificationService.h"
+#include "services/stt/SpeechService.h"
+#include "services/tts/TtsService.h"
+#include "services/voice_trigger/ClapDetectorService.h"
 #include "storage/StorageManager.h"
 #include "storage/cache/CacheManager.h"
 #include "storage/repositories/DataSourceRepository.h"
@@ -170,6 +175,7 @@ SettingsScreen::SettingsScreen(QWidget* parent) : QWidget(parent) {
     sections_->addWidget(build_keybindings());   // 10
     sections_->addWidget(build_python_env());    // 11
     sections_->addWidget(build_developer());     // 12
+    sections_->addWidget(new VoiceConfigSection); // 13
 
     QList<QPushButton*> nav_btns;
     auto make_btn = [&](const QString& text, int idx) {
@@ -206,6 +212,7 @@ SettingsScreen::SettingsScreen(QWidget* parent) : QWidget(parent) {
     make_btn("Keybindings", 10);
     make_btn("Python Env", 11);
     make_btn("Developer", 12);
+    make_btn("Voice", 13);
 
     first->setChecked(true);
 
@@ -217,6 +224,24 @@ SettingsScreen::SettingsScreen(QWidget* parent) : QWidget(parent) {
     if (auto* llm = qobject_cast<LlmConfigSection*>(sections_->widget(5))) {
         connect(llm, &LlmConfigSection::config_changed, this,
                 []() { ai_chat::LlmService::instance().reload_config(); });
+    }
+
+    // Wire Voice config changes — reload BOTH STT and TTS services and
+    // restart the clap detector so the user's new provider / key / voice /
+    // wake-trigger picks take effect on the next session.
+    if (auto* voice = qobject_cast<VoiceConfigSection*>(sections_->widget(13))) {
+        connect(voice, &VoiceConfigSection::config_changed, this, []() {
+            fincept::services::SpeechService::instance().reload_config();
+            fincept::services::TtsService::instance().reload_config();
+
+            // Apply the clap-to-start toggle live: stop the detector
+            // unconditionally (in case mode/sensitivity changed) and
+            // restart only if the toggle is on.
+            auto& clap = fincept::services::ClapDetectorService::instance();
+            clap.stop();
+            if (fincept::services::ClapDetectorService::is_enabled_in_config())
+                clap.start();
+        });
     }
 
     connect(&ui::ThemeManager::instance(), &ui::ThemeManager::theme_changed, this,
@@ -238,13 +263,66 @@ void SettingsScreen::refresh_theme() {
 
 void SettingsScreen::showEvent(QShowEvent* e) {
     QWidget::showEvent(e);
+    reload_all_sections();
+    subscribe_mcp_events();
+}
+
+void SettingsScreen::hideEvent(QHideEvent* e) {
+    QWidget::hideEvent(e);
+    unsubscribe_mcp_events();
+}
+
+void SettingsScreen::reload_all_sections() {
     load_credentials();
     load_appearance();
     load_notifications();
     load_security();
     refresh_storage_stats();
-    if (auto* llm = qobject_cast<LlmConfigSection*>(sections_->widget(5)))
-        llm->reload();
+    if (sections_) {
+        if (auto* llm = qobject_cast<LlmConfigSection*>(sections_->widget(5)))
+            llm->reload();
+    }
+}
+
+// ── MCP-driven UI sync ──────────────────────────────────────────────────────
+// MCP settings tools publish settings.changed (with {key, value}) and
+// llm.provider_changed (with {provider}). Both warrant a full reload —
+// settings.changed could touch any section, and llm.provider_changed
+// requires LlmConfigSection to refresh + the active LlmService to pick
+// up the new provider.
+
+void SettingsScreen::subscribe_mcp_events() {
+    if (!mcp_event_subs_.isEmpty()) return; // idempotent
+
+    QPointer<SettingsScreen> self = this;
+    auto on_settings_changed = [self](const QVariantMap&) {
+        if (!self) return;
+        QMetaObject::invokeMethod(self.data(), [self]() {
+            if (!self) return;
+            self->reload_all_sections();
+        }, Qt::QueuedConnection);
+    };
+    auto on_provider_changed = [self](const QVariantMap&) {
+        if (!self) return;
+        QMetaObject::invokeMethod(self.data(), [self]() {
+            if (!self) return;
+            self->reload_all_sections();
+            // LlmService consumes the new active config; pick it up immediately
+            // so the AiChatScreen subscriber (Phase 2.9) doesn't race.
+            ai_chat::LlmService::instance().reload_config();
+        }, Qt::QueuedConnection);
+    };
+
+    auto& bus = EventBus::instance();
+    mcp_event_subs_.append(bus.subscribe("settings.changed",     on_settings_changed));
+    mcp_event_subs_.append(bus.subscribe("llm.provider_changed", on_provider_changed));
+}
+
+void SettingsScreen::unsubscribe_mcp_events() {
+    auto& bus = EventBus::instance();
+    for (auto id : mcp_event_subs_)
+        bus.unsubscribe(id);
+    mcp_event_subs_.clear();
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -366,7 +444,7 @@ QWidget* SettingsScreen::build_credentials() {
         save_btn->setStyleSheet(btn_primary_ss());
         bhl->addWidget(save_btn);
 
-        connect(save_btn, &QPushButton::clicked, this, [this, key, field, status_lbl]() {
+        connect(save_btn, &QPushButton::clicked, this, [key, field, status_lbl]() {
             QString val = field->text().trimmed();
             if (val.isEmpty()) {
                 SecureStorage::instance().remove(key);
@@ -1451,7 +1529,7 @@ QWidget* SettingsScreen::build_storage() {
 
         add_file_row(
             "Log Files", log_sz, "Clear Logs", "Clear all application log files?\nCurrent log data will be lost.",
-            [this]() {
+            []() {
                 StorageManager::instance().clear_log_files();
                 LOG_INFO("Settings", "Logs cleared");
             },
@@ -1460,7 +1538,7 @@ QWidget* SettingsScreen::build_storage() {
         add_file_row(
             "Workspace Files (.fwsp)", ws_sz, "Delete Workspaces",
             "Delete all saved workspace files?\nThis cannot be undone.",
-            [this]() {
+            []() {
                 StorageManager::instance().clear_workspace_files();
                 LOG_INFO("Settings", "Workspaces deleted");
             },
@@ -1470,7 +1548,7 @@ QWidget* SettingsScreen::build_storage() {
             "Window & UI State", qs_lbl, "Reset UI State",
             "Reset all window positions, dock layouts, and perspectives?\n"
             "Takes effect on next restart.",
-            [this]() {
+            []() {
                 StorageManager::instance().clear_qsettings();
                 LOG_INFO("Settings", "QSettings cleared");
             },
@@ -2465,7 +2543,7 @@ QWidget* SettingsScreen::build_logging() {
     add_btn->setStyleSheet(btn_secondary_ss());
     add_btn->setFixedHeight(30);
     add_btn->setFixedWidth(180);
-    connect(add_btn, &QPushButton::clicked, this, [this, add_tag_row]() mutable { add_tag_row({}, "Info"); });
+    connect(add_btn, &QPushButton::clicked, this, [add_tag_row]() mutable { add_tag_row({}, "Info"); });
     vl->addWidget(add_btn);
     vl->addWidget(make_sep());
 
@@ -2633,7 +2711,13 @@ QWidget* SettingsScreen::build_security() {
         }
     });
 
-    // Save PIN handler
+    // Save PIN handler.
+    //
+    // All validation (length, digits, weak pattern, old-PIN verification, same-
+    // as-old rejection) lives in PinManager::change_pin so there is exactly
+    // one enforcement path and a wrong current PIN correctly feeds the
+    // shared lockout counter. The UI only checks "new" == "confirm" since the
+    // manager has no notion of a confirm field.
     connect(save_pin_btn, &QPushButton::clicked, this, [this]() {
         sec_pin_error_->hide();
         sec_pin_success_->hide();
@@ -2643,45 +2727,47 @@ QWidget* SettingsScreen::build_security() {
         const QString new_pin = sec_new_pin_->text();
         const QString confirm = sec_confirm_pin_->text();
 
-        // Verify current PIN
-        if (!pm.verify_pin(current)) {
-            sec_pin_error_->setText("Current PIN is incorrect");
+        // Surface lockout BEFORE attempting change_pin — otherwise change_pin
+        // returns "Current PIN is incorrect" because verify_pin's locked-out
+        // path also returns false. Misleading: the user thinks they typed
+        // the wrong PIN when actually they're rate-limited.
+        if (pm.is_locked_out()) {
+            int secs = pm.lockout_remaining_seconds();
+            sec_pin_error_->setText(
+                QString("Locked out — try again in %1s").arg(secs));
             sec_pin_error_->show();
             sec_current_pin_->clear();
-            sec_current_pin_->setFocus();
+            sec_new_pin_->clear();
+            sec_confirm_pin_->clear();
             return;
         }
 
-        // Validate new PIN
-        if (new_pin.length() != 6) {
-            sec_pin_error_->setText("New PIN must be exactly 6 digits");
-            sec_pin_error_->show();
-            return;
-        }
-        for (const QChar& c : new_pin) {
-            if (!c.isDigit()) {
-                sec_pin_error_->setText("PIN must contain only digits");
-                sec_pin_error_->show();
-                return;
-            }
-        }
         if (new_pin != confirm) {
             sec_pin_error_->setText("New PINs do not match");
             sec_pin_error_->show();
+            // Clear both new-PIN fields, not just confirm — leaving the
+            // entered PIN visible-as-text in the masked field is mild
+            // process-memory exposure and forces a full retype anyway.
+            sec_new_pin_->clear();
             sec_confirm_pin_->clear();
-            sec_confirm_pin_->setFocus();
-            return;
-        }
-        if (new_pin == current) {
-            sec_pin_error_->setText("New PIN must be different from current PIN");
-            sec_pin_error_->show();
+            sec_new_pin_->setFocus();
             return;
         }
 
-        auto result = pm.set_pin(new_pin);
+        auto result = pm.change_pin(current, new_pin);
         if (result.is_err()) {
-            sec_pin_error_->setText(QString::fromStdString(result.error()));
+            // If verify_pin tripped the lockout on this very attempt, show
+            // the countdown rather than the generic "incorrect" message.
+            if (pm.is_locked_out()) {
+                int secs = pm.lockout_remaining_seconds();
+                sec_pin_error_->setText(
+                    QString("Too many failed attempts — locked for %1s").arg(secs));
+            } else {
+                sec_pin_error_->setText(QString::fromStdString(result.error()));
+            }
             sec_pin_error_->show();
+            sec_current_pin_->clear();
+            sec_current_pin_->setFocus();
             return;
         }
 
@@ -2726,6 +2812,11 @@ QWidget* SettingsScreen::build_security() {
     connect(sec_autolock_toggle_, &QCheckBox::toggled, this,
             [this](bool checked) { sec_lock_timeout_->setEnabled(checked); });
 
+    sec_lock_on_minimize_ = new QCheckBox("Lock when the window is minimized");
+    sec_lock_on_minimize_->setStyleSheet(check_ss());
+    vl->addWidget(make_row("Lock on Minimize", sec_lock_on_minimize_,
+                            "When on, minimizing the terminal immediately shows the PIN screen."));
+
     vl->addSpacing(16);
 
     // ── SAVE ──────────────────────────────────────────────────────────────────
@@ -2735,23 +2826,79 @@ QWidget* SettingsScreen::build_security() {
     connect(save_btn, &QPushButton::clicked, this, [this]() {
         auto& repo = SettingsRepository::instance();
         auto& guard = auth::InactivityGuard::instance();
+        auto& pm = auth::PinManager::instance();
 
         bool autolock = sec_autolock_toggle_->isChecked();
         int minutes = sec_lock_timeout_->currentData().toInt();
 
         repo.set("security.autolock_enabled", autolock ? "true" : "false", "security");
         repo.set("security.lock_timeout_minutes", QString::number(minutes), "security");
+        if (sec_lock_on_minimize_) {
+            repo.set("security.lock_on_minimize",
+                     sec_lock_on_minimize_->isChecked() ? "true" : "false", "security");
+        }
 
+        // Always update the interval so the change takes effect on the next
+        // run regardless of current PIN state. Only flip the enabled flag if
+        // a PIN is configured — otherwise the timer fires and lock_requested
+        // is suppressed by show_lock_screen()'s no-PIN guard, leaving the
+        // timer churning invisibly.
         guard.set_timeout_minutes(minutes);
-        guard.set_enabled(autolock);
+        guard.set_enabled(autolock && pm.has_pin());
 
-        LOG_INFO("Settings", QString("Security settings saved: autolock=%1, timeout=%2min").arg(autolock).arg(minutes));
+        LOG_INFO("Settings",
+                 QString("Security settings saved: autolock=%1, timeout=%2min, has_pin=%3")
+                     .arg(autolock).arg(minutes).arg(pm.has_pin()));
     });
     vl->addWidget(save_btn);
+
+    // ── AUDIT LOG ─────────────────────────────────────────────────────────────
+    vl->addSpacing(16);
+    auto* t_audit = new QLabel("AUDIT LOG");
+    t_audit->setStyleSheet(sub_title_ss());
+    vl->addWidget(t_audit);
+    vl->addSpacing(4);
+
+    auto* audit_note = new QLabel("Recent security events (PIN setup, failed unlocks, inactivity locks).");
+    audit_note->setWordWrap(true);
+    audit_note->setStyleSheet(QString("color:%1;font-size:12px;background:transparent;")
+                                  .arg(ui::colors::TEXT_DIM()));
+    vl->addWidget(audit_note);
+
+    sec_audit_list_ = new QListWidget;
+    sec_audit_list_->setFixedHeight(180);
+    sec_audit_list_->setStyleSheet(
+        QString("QListWidget { background:%1; color:%2; border:1px solid %3;"
+                "font-family:'Consolas','Courier New',monospace; font-size:12px; }"
+                "QListWidget::item { padding:2px 6px; }")
+            .arg(ui::colors::BG_SURFACE(), ui::colors::TEXT_PRIMARY(), ui::colors::BORDER_DIM()));
+    vl->addWidget(sec_audit_list_);
+
+    auto* refresh_audit = new QPushButton("Refresh");
+    refresh_audit->setFixedWidth(140);
+    refresh_audit->setStyleSheet(btn_secondary_ss());
+    connect(refresh_audit, &QPushButton::clicked, this, [this]() { refresh_audit_log(); });
+    vl->addWidget(refresh_audit);
 
     vl->addStretch();
     scroll->setWidget(page);
     return scroll;
+}
+
+void SettingsScreen::refresh_audit_log() {
+    if (!sec_audit_list_)
+        return;
+    sec_audit_list_->clear();
+    const auto events = auth::SecurityAuditLog::instance().recent(100);
+    for (const auto& e : events) {
+        const QString ts = e.timestamp.toString("yyyy-MM-dd hh:mm:ss");
+        const QString line = e.detail.isEmpty()
+                                 ? QString("%1  %2").arg(ts, e.event)
+                                 : QString("%1  %2  (%3)").arg(ts, e.event, e.detail);
+        sec_audit_list_->addItem(line);
+    }
+    if (events.isEmpty())
+        sec_audit_list_->addItem("(no events recorded yet)");
 }
 
 void SettingsScreen::load_security() {
@@ -2805,6 +2952,17 @@ void SettingsScreen::load_security() {
             }
         }
     }
+
+    if (sec_lock_on_minimize_) {
+        const QSignalBlocker b(sec_lock_on_minimize_);
+        auto r = repo.get("security.lock_on_minimize");
+        // Default off — most users minimize frequently and don't expect a lock.
+        sec_lock_on_minimize_->setChecked(r.is_ok() && r.value() == "true");
+    }
+
+    // Populate audit log when the Security tab is shown. Cheap — the query
+    // is LIMIT 100 against an indexed column.
+    refresh_audit_log();
 }
 
 // ── Profiles ──────────────────────────────────────────────────────────────────

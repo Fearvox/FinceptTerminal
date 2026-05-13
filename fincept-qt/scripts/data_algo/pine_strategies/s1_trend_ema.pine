@@ -1,0 +1,16 @@
+//@version=6
+strategy("S1_Trend_EMA_Cross", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.1)
+fast = ta.ema(close, 20)
+slow = ta.ema(close, 50)
+plot(fast, color=color.yellow, title="EMA 20")
+plot(slow, color=color.blue, title="EMA 50")
+
+longCond = ta.crossover(fast, slow)
+shortCond = ta.crossunder(fast, slow)
+
+if longCond
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", "Long", loss=close*0.02/syminfo.mintick, profit=close*0.04/syminfo.mintick)
+if shortCond
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", "Short", loss=close*0.02/syminfo.mintick, profit=close*0.04/syminfo.mintick)

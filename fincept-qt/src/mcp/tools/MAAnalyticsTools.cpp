@@ -5,55 +5,91 @@
 #include "mcp/tools/MAAnalyticsTools.h"
 
 #include "core/logging/Logger.h"
+#include "mcp/AsyncDispatch.h"
+#include "mcp/tools/ThreadHelper.h"
 #include "services/ma_analytics/MAAnalyticsService.h"
 
-#include <QEventLoop>
 #include <QJsonDocument>
-#include <QTimer>
+#include <QPromise>
+
+#include <memory>
 
 namespace fincept::mcp::tools {
 
 static constexpr const char* TAG = "MAAnalyticsTools";
-static constexpr int kTimeoutMs = 30000;
 
-// Helper: call an async MA service method, wait for result or error
+// Phase 4 — both shapes provided:
+//
+//   run_ma_sync   — blocks worker thread until svc emits result_ready/error.
+//                   Pre-Phase-4 default; 46 tools use this. Each can migrate
+//                   to async incrementally by switching its handler to
+//                   t.async_handler and calling run_ma_async.
+//
+//   run_ma_async  — non-blocking. Invokes `trigger` on the MA service's
+//                   thread, hooks result_ready/error_occurred for the given
+//                   context, resolves the promise when either fires.
+//                   Cancellation observed via ctx.cancelled before resolve.
+//                   Trigger MUST capture inputs by value — it runs on the
+//                   service thread after the calling lambda has returned.
 static ToolResult run_ma_sync(const QString& context, std::function<void()> trigger) {
     QJsonObject result_data;
     QString error_msg;
     bool got_result = false;
 
-    QEventLoop loop;
     auto& svc = fincept::services::ma::MAAnalyticsService::instance();
 
-    QObject::connect(&svc, &fincept::services::ma::MAAnalyticsService::result_ready, &loop,
-                     [&](const QString& ctx, const QJsonObject& data) {
-                         if (ctx != context)
-                             return;
-                         result_data = data;
-                         got_result = true;
-                         loop.quit();
-                     });
-
-    QObject::connect(&svc, &fincept::services::ma::MAAnalyticsService::error_occurred, &loop,
-                     [&](const QString& ctx, const QString& msg) {
-                         if (ctx != context)
-                             return;
-                         error_msg = msg;
-                         got_result = true;
-                         loop.quit();
-                     });
-
-    QTimer::singleShot(kTimeoutMs, &loop, &QEventLoop::quit);
-
-    trigger();
-    loop.exec();
+    detail::run_async_wait(&svc, [&](auto signal_done) {
+        auto* gate = new QObject;
+        QObject::connect(&svc, &fincept::services::ma::MAAnalyticsService::result_ready, gate,
+                         [&, gate, signal_done](const QString& ctx, const QJsonObject& data) {
+                             if (ctx != context) return;
+                             result_data = data;
+                             got_result = true;
+                             gate->deleteLater();
+                             signal_done();
+                         });
+        QObject::connect(&svc, &fincept::services::ma::MAAnalyticsService::error_occurred, gate,
+                         [&, gate, signal_done](const QString& ctx, const QString& msg) {
+                             if (ctx != context) return;
+                             error_msg = msg;
+                             got_result = true;
+                             gate->deleteLater();
+                             signal_done();
+                         });
+        trigger();
+    });
 
     if (!got_result)
-        return ToolResult::fail("Timeout waiting for M&A result: " + context);
+        return ToolResult::fail("M&A result missing: " + context);
     if (!error_msg.isEmpty())
         return ToolResult::fail(error_msg);
-
     return ToolResult::ok_data(result_data);
+}
+
+[[maybe_unused]]
+static void run_ma_async(const QString& context, std::function<void()> trigger,
+                          ToolContext ctx, std::shared_ptr<QPromise<ToolResult>> promise) {
+    auto* svc = &fincept::services::ma::MAAnalyticsService::instance();
+
+    AsyncDispatch::callback_to_promise(
+        svc, ctx, promise,
+        [svc, context, trigger = std::move(trigger), ctx](auto resolve) {
+            auto* gate = new QObject;
+            QObject::connect(svc, &fincept::services::ma::MAAnalyticsService::result_ready, gate,
+                             [gate, context, resolve, ctx](const QString& c, const QJsonObject& data) {
+                                 if (c != context) return;
+                                 if (ctx.cancelled()) resolve(ToolResult::fail("cancelled"));
+                                 else                  resolve(ToolResult::ok_data(data));
+                                 gate->deleteLater();
+                             });
+            QObject::connect(svc, &fincept::services::ma::MAAnalyticsService::error_occurred, gate,
+                             [gate, context, resolve](const QString& c, const QString& msg) {
+                                 if (c != context) return;
+                                 resolve(ToolResult::fail(msg));
+                                 gate->deleteLater();
+                             });
+            trigger();
+        });
 }
 
 std::vector<ToolDef> get_ma_analytics_tools() {

@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Pre-commit secret scan — vendor-free, regex-only.
+#
+# Scans the staged diff for common secret patterns. Designed for this
+# repo's specific history: we have leaked plaintext API key files
+# (_Manifold API Key) and hardcoded API keys in settings.json before;
+# the patterns below cover those plus standard cloud/git/slack tokens.
+#
+# Invocation:
+#   - As a git hook (no args): reads `git diff --cached -U0` and scans
+#     added lines (+ lines, excluding the +++ filename header)
+#   - As a test runner (one or more file path args): scans each given
+#     file as if its entire content were a staged addition. Lets the
+#     iter-3 installer self-test without dirtying the staging area.
+#
+# Bypass: `git commit --no-verify`. Discouraged. If you really need it,
+# also explain why in the commit body so the next reviewer understands.
+
+set -u
+
+RED=$'\033[0;31m'
+YEL=$'\033[1;33m'
+RST=$'\033[0m'
+
+# --- Pattern catalogue ---
+# Each pattern: regex,description
+# Anchors deliberately loose because diff context lines vary.
+declare -a PATTERNS=(
+  'EVERMEM_API_KEY[[:space:]]*=[[:space:]]*[\"\x27]?[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|EVERMEM_API_KEY hardcoded UUID'
+  'MANIFOLD_API_KEY[[:space:]]*=[[:space:]]*[\"\x27]?[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|MANIFOLD_API_KEY hardcoded UUID'
+  '[A-Z_]+(_API_KEY|_SECRET|_TOKEN|_PASSWORD)[[:space:]]*=[[:space:]]*[\"\x27]?[a-zA-Z0-9_+/=.-]{20,}|generic *_API_KEY/_SECRET/_TOKEN/_PASSWORD assignment'
+  'sk-(proj-)?[a-zA-Z0-9_-]{30,}|OpenAI/Anthropic-style sk-* token'
+  'ghp_[a-zA-Z0-9]{30,}|GitHub personal access token (ghp_)'
+  'gh[osur]_[a-zA-Z0-9]{30,}|GitHub OAuth/server/refresh token (gho_/ghs_/ghu_/ghr_)'
+  'xox[baprs]-[0-9a-zA-Z-]{10,}|Slack token (xox*)'
+  'AKIA[0-9A-Z]{16}|AWS access key ID'
+  'Authorization:[[:space:]]+(Key|Bearer)[[:space:]]+[a-f0-9-]{30,}|HTTP Authorization header with embedded key'
+  # The two specific UUIDs that leaked in this repo's history pre-cleanup.
+  # Block forever — they're rotation candidates if they ever appear again.
+  '9db9eb89-aeea-4fa2-9da8-f70590394614|known previously-leaked EVERMEM key'
+  '43659d2b-b80c-43dc-82b5-4633d0e4950b|known previously-leaked Manifold key'
+)
+
+# --- Allowlist suffixes ---
+# Files where pattern matches are acceptable (e.g. docs that talk ABOUT
+# the patterns, or this hook script itself listing the patterns).
+allowlist_path() {
+  local p="$1"
+  case "$p" in
+    *_git_hooks/pre-commit)                       return 0 ;;  # this file
+    *_install_git_hooks.sh)                       return 0 ;;  # installer carries self-test fixtures
+    *BASELINE.md)                                 return 0 ;;  # docs mention key UUIDs
+    *.gitignore)                                  return 0 ;;  # rule names mention "key"
+    *.git/hooks/pre-commit)                       return 0 ;;
+    *fincept-qt/scripts/data_algo/_git_hooks/*)   return 0 ;;
+  esac
+  return 1
+}
+
+# Scan a single chunk of text (added lines from diff or file content).
+# Args: $1=path, $2=content
+scan_text() {
+  local path="$1"
+  local content="$2"
+  local hits=0
+  for entry in "${PATTERNS[@]}"; do
+    local rx="${entry%%|*}"
+    local desc="${entry#*|}"
+    while IFS= read -r line; do
+      if [[ "$line" =~ $rx ]]; then
+        printf "${RED}  ✗ %s${RST} — %s\n" "$desc" "$path"
+        printf "    matched: %s\n" "${line:0:120}"
+        hits=$((hits+1))
+      fi
+    done <<< "$content"
+  done
+  return $hits
+}
+
+total_hits=0
+
+if [ "$#" -gt 0 ]; then
+  # --- File-arg mode: scan each given file's entire content ---
+  for f in "$@"; do
+    if allowlist_path "$f"; then continue; fi
+    if [ ! -f "$f" ]; then
+      printf "${YEL}  ? %s — file not found, skipped${RST}\n" "$f"
+      continue
+    fi
+    content="$(cat "$f")"
+    scan_text "$f" "$content"
+    total_hits=$((total_hits + $?))
+  done
+else
+  # --- Git hook mode: scan staged diff ---
+  diff_output="$(git diff --cached -U0 --no-color 2>/dev/null)"
+  if [ -z "$diff_output" ]; then
+    exit 0  # nothing staged
+  fi
+  current_path=""
+  added_lines=""
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^\+\+\+\ b/(.*) ]]; then
+      # Capture the new path BEFORE flushing, because scan_text runs
+      # [[ =~ ]] internally which clobbers BASH_REMATCH and would leave
+      # ${BASH_REMATCH[1]} unset (set -u → unbound-variable error).
+      new_path="${BASH_REMATCH[1]}"
+      if [ -n "$current_path" ] && [ -n "$added_lines" ] && ! allowlist_path "$current_path"; then
+        scan_text "$current_path" "$added_lines"
+        total_hits=$((total_hits + $?))
+      fi
+      current_path="$new_path"
+      added_lines=""
+    elif [[ "$line" =~ ^\+ ]] && ! [[ "$line" =~ ^\+\+\+ ]]; then
+      added_lines+="${line:1}"$'\n'
+    fi
+  done <<< "$diff_output"
+  # Flush last file
+  if [ -n "$current_path" ] && [ -n "$added_lines" ] && ! allowlist_path "$current_path"; then
+    scan_text "$current_path" "$added_lines"
+    total_hits=$((total_hits + $?))
+  fi
+fi
+
+if [ "$total_hits" -gt 0 ]; then
+  printf "\n${RED}═══ %d secret pattern hit(s). Commit BLOCKED.${RST}\n" "$total_hits"
+  printf "${YEL}If this is a false positive (example value in docs, test fixture, etc.),${RST}\n"
+  printf "${YEL}bypass with \`git commit --no-verify\` and explain why in the commit body.${RST}\n"
+  exit 1
+fi
+
+exit 0

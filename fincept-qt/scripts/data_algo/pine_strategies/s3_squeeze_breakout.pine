@@ -1,0 +1,28 @@
+//@version=6
+strategy("S3_Squeeze_Breakout", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.1)
+length = 20
+bb_mult = 2.0
+kc_mult = 1.5
+basis = ta.sma(close, length)
+dev = bb_mult * ta.stdev(close, length)
+upper_bb = basis + dev
+lower_bb = basis - dev
+
+ma_kc = ta.sma(close, length)
+range_ma = ta.sma(ta.tr, length)
+upper_kc = ma_kc + range_ma * kc_mult
+lower_kc = ma_kc - range_ma * kc_mult
+
+squeezeOn = lower_bb > lower_kc and upper_bb < upper_kc
+squeezeReleased = not squeezeOn and squeezeOn[1]
+
+mom = close - ta.sma(close, length)
+
+if squeezeReleased and mom > 0
+    strategy.entry("Long", strategy.long)
+if squeezeReleased and mom < 0
+    strategy.entry("Short", strategy.short)
+if ta.crossunder(mom, 0)
+    strategy.close("Long")
+if ta.crossover(mom, 0)
+    strategy.close("Short")

@@ -1,0 +1,85 @@
+# Propfirm v4 — news calendar (2026)
+#
+# Sources (fetched 2026-04-20):
+#   FOMC — federalreserve.gov/monetarypolicy/fomccalendars.htm  [all 8 confirmed]
+#   CPI  — tradingeconomics.com/united-states/consumer-price-index-cpi
+#   NFP  — tradingeconomics.com/united-states/non-farm-payrolls
+#
+# Format:
+#   events:
+#     - ts: ISO-8601 UTC timestamp of release
+#       kind: FOMC | NFP | CPI | PCE | GDP | JOLTS | PPI
+#       skip_window_min: bars within ±N minutes of ts are blocked
+#
+# UTC conversion:
+#   DST window 2026: Mar 8 .. Nov 1 (EDT = UTC-4, else EST = UTC-5).
+#   FOMC statement : 14:00 ET on meeting day 2  → 18:00 UTC (EDT) or 19:00 UTC (EST)
+#   BLS releases   : 08:30 ET                    → 12:30 UTC (EDT) or 13:30 UTC (EST)
+#
+# TODO: 9 months of CPI/NFP 2026 dates still missing (BLS.gov 403'd WebFetch).
+#       Before running P1 backtest on bars past 2026-05-13, fetch via:
+#         - https://www.bls.gov/schedule/news_release/cpi.htm    (manual browser)
+#         - https://www.bls.gov/schedule/news_release/empsit.htm (manual browser)
+#       Rule of thumb for sanity-check: NFP = first Friday of month @ 08:30 ET
+#       (occasionally shifted for holidays); CPI = second Tuesday/Wednesday
+#       of month @ 08:30 ET, typically the week after NFP.
+
+events:
+  # ── FOMC 2026 (all 8 meetings confirmed from Fed calendar) ─────
+  - ts: "2026-01-28T19:00:00Z"
+    kind: FOMC
+    skip_window_min: 15
+    note: "SEP + press conference (EST)"
+  - ts: "2026-03-18T18:00:00Z"
+    kind: FOMC
+    skip_window_min: 15
+    note: "SEP + press conference (EDT; DST starts 03-08)"
+  - ts: "2026-04-29T18:00:00Z"
+    kind: FOMC
+    skip_window_min: 15
+  - ts: "2026-06-17T18:00:00Z"
+    kind: FOMC
+    skip_window_min: 15
+    note: "SEP"
+  - ts: "2026-07-29T18:00:00Z"
+    kind: FOMC
+    skip_window_min: 15
+  - ts: "2026-09-16T18:00:00Z"
+    kind: FOMC
+    skip_window_min: 15
+    note: "SEP"
+  - ts: "2026-10-28T18:00:00Z"
+    kind: FOMC
+    skip_window_min: 15
+  - ts: "2026-12-09T19:00:00Z"
+    kind: FOMC
+    skip_window_min: 15
+    note: "SEP (EST; DST ends 11-01)"
+
+  # ── NFP 2026 (3 confirmed; 9 more needed from BLS) ─────────────
+  - ts: "2026-03-06T13:30:00Z"
+    kind: NFP
+    skip_window_min: 15
+    note: "Feb payroll (EST)"
+  - ts: "2026-04-03T12:30:00Z"
+    kind: NFP
+    skip_window_min: 15
+    note: "Mar payroll (EDT)"
+  - ts: "2026-05-08T12:30:00Z"
+    kind: NFP
+    skip_window_min: 15
+    note: "Apr payroll (EDT; 05-01 skipped, likely calendar-adjusted)"
+
+  # ── CPI 2026 (3 confirmed; 9 more needed from BLS) ─────────────
+  - ts: "2026-03-11T12:30:00Z"
+    kind: CPI
+    skip_window_min: 15
+    note: "Feb CPI (EDT)"
+  - ts: "2026-04-10T12:30:00Z"
+    kind: CPI
+    skip_window_min: 15
+    note: "Mar CPI (EDT)"
+  - ts: "2026-05-12T12:30:00Z"
+    kind: CPI
+    skip_window_min: 15
+    note: "Apr CPI (EDT)"

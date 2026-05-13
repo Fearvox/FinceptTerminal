@@ -81,6 +81,12 @@ class CryptoTradingScreen : public QWidget, public IStatefulScreen {
     void async_set_leverage(int leverage);
     void async_set_margin_mode(const QString& mode);
 
+    // ── DataHub subscription lifecycle (the only data path since Phase 6) ─
+    // Only exchanges registered as DataHub producers via
+    // ExchangeSessionManager::topic_patterns() can appear in the dropdown.
+    void hub_subscribe_topics();
+    void hub_unsubscribe_topics();
+
     // ── Command bar widgets ──
     QPushButton* exchange_btn_ = nullptr;
     QMenu* exchange_menu_ = nullptr;
@@ -88,7 +94,13 @@ class CryptoTradingScreen : public QWidget, public IStatefulScreen {
     QPushButton* mode_btn_ = nullptr;
     QPushButton* api_btn_ = nullptr;
     QLabel* ws_status_ = nullptr;
+    QLabel* ws_transport_ = nullptr;  // tiny hint: "NATIVE" for Kraken, "DAEMON" for ccxt
     QLabel* clock_label_ = nullptr;
+
+    /// Context object that owns all direct connections to the native Kraken
+    /// WS client. Destroyed (and recreated) on symbol/exchange swap so every
+    /// connection is auto-disconnected in one move.
+    QObject* ws_subscription_owner_ = nullptr;
 
     // ── Sub-widgets ──
     crypto::CryptoTickerBar* ticker_bar_ = nullptr;
@@ -116,11 +128,6 @@ class CryptoTradingScreen : public QWidget, public IStatefulScreen {
     QString portfolio_id_;
     trading::PtPortfolio portfolio_;
 
-    // WS callbacks
-    int ws_price_cb_id_ = -1;
-    int ws_ob_cb_id_ = -1;
-    int ws_candle_cb_id_ = -1;
-    int ws_trade_cb_id_ = -1;
 
     // Async fetch guards
     std::atomic<bool> candles_fetching_{false};

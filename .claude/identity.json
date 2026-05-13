@@ -1,0 +1,20 @@
+{
+  "version": "2.0",
+  "technicalLevel": "technical",
+  "preferredStyle": {
+    "verbosity": "minimal",
+    "codeComments": true,
+    "explanations": true
+  },
+  "domains": [
+    "python",
+    "cpp",
+    "qt",
+    "typescript",
+    "cmake"
+  ],
+  "suggestedBy": "ecc-tools-repo-analysis",
+  "createdAt": "2026-03-20T12:07:57.119Z",
+  "correctedAt": "2026-05-12T22:30:00.000Z",
+  "correctionNote": "Original ecc-tools-repo-analysis suggested domains=[javascript] which is wrong: repo has 1521 .py files (primary), C++/Qt6 product under fincept-qt/, TypeScript desktop shell under fincept-terminal-desktop/, and 4 CMakeLists.txt. No first-party JavaScript code. Domains corrected manually in stability sweep iter-2/5."
+}

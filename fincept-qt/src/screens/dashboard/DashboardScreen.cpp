@@ -4,6 +4,7 @@
 #include "screens/dashboard/canvas/DashboardTemplates.h"
 #include "screens/dashboard/canvas/TemplatePicker.h"
 #include "screens/dashboard/canvas/WidgetRegistry.h"
+#include "screens/dashboard/widgets/BaseWidget.h"
 #include "services/markets/MarketDataService.h"
 #include "services/notifications/NotificationService.h"
 #include "storage/repositories/SettingsRepository.h"
@@ -136,7 +137,7 @@ DashboardScreen::DashboardScreen(QWidget* parent) : QWidget(parent) {
         auto* dlg = new TemplatePicker(this);
         connect(dlg, &TemplatePicker::template_selected, this, [this](const QString& tid) {
             // Clear saved state so fresh template is used
-            QtConcurrent::run([]() { fincept::SettingsRepository::instance().remove("dashboard_canvas_layout"); });
+            (void)QtConcurrent::run([]() { fincept::SettingsRepository::instance().remove("dashboard_canvas_layout"); });
             canvas_->apply_template(tid);
         });
         dlg->exec();
@@ -144,6 +145,8 @@ DashboardScreen::DashboardScreen(QWidget* parent) : QWidget(parent) {
     });
 
     connect(toolbar_, &DashboardToolBar::save_layout_clicked, this, &DashboardScreen::save_layout);
+
+    connect(toolbar_, &DashboardToolBar::refresh_clicked, this, &DashboardScreen::on_refresh_clicked);
 
     connect(toolbar_, &DashboardToolBar::toggle_compact_clicked, this, [this]() {
         static bool compact = false;
@@ -235,6 +238,33 @@ void DashboardScreen::refresh_ticker() {
     hub_resubscribe_ticker();
 }
 
+void DashboardScreen::on_refresh_clicked() {
+    // Toolbar REFRESH button — force-refresh every live data source on the
+    // dashboard. The hub's per-producer rate limit is still honoured, so
+    // rage-clicking can't hammer upstream APIs.
+    if (ticker_bar_ && !ticker_subscribed_.isEmpty()) {
+        QStringList topics;
+        topics.reserve(ticker_subscribed_.size());
+        for (const QString& sym : ticker_subscribed_)
+            topics.append(QStringLiteral("market:quote:") + sym);
+        datahub::DataHub::instance().request(topics, /*force=*/true);
+    }
+    if (market_pulse_)
+        market_pulse_->refresh_data();
+    // Fan refresh out to every visible BaseWidget tile on the canvas.
+    // Hidden tiles (collapsed, off-screen, on a non-visible workspace) are
+    // skipped — refreshing them burns the producer's rate limit on data
+    // the user can't see, and the visibility-driven subscribe/unsubscribe
+    // (P3) means hidden widgets aren't subscribed anyway.
+    if (canvas_) {
+        const auto widgets = canvas_->findChildren<widgets::BaseWidget*>();
+        for (auto* w : widgets) {
+            if (w && w->isVisible())
+                w->request_refresh();
+        }
+    }
+}
+
 
 void DashboardScreen::rebuild_ticker_from_cache() {
     if (!ticker_bar_)
@@ -278,7 +308,11 @@ void DashboardScreen::hub_resubscribe_ticker() {
             rebuild_ticker_from_cache();
         });
     }
-    hub.request(topics);
+    // force=true: ticker bar re-subscribe happens on user edits and tab shows —
+    // bypass min_interval so the ticker doesn't sit blank. Subscribe's built-in
+    // cold-start fetch (task 4) already handles the cold case; force is for
+    // the "symbols changed, existing cache is for old symbols" case.
+    hub.request(topics, /*force=*/true);
     hub_active_ = true;
 }
 
@@ -317,8 +351,8 @@ void DashboardScreen::save_layout() {
     GridLayout layout = canvas_->current_layout();
 
     // Serialize: cols, row_h, margin, item count, then each item
-    QByteArray data;
-    QDataStream stream(&data, QIODevice::WriteOnly);
+    QByteArray buf;
+    QDataStream stream(&buf, QIODevice::WriteOnly);
     stream << layout.cols << layout.row_h << layout.margin;
     stream << static_cast<int>(layout.items.size());
     for (const auto& item : layout.items) {
@@ -327,15 +361,15 @@ void DashboardScreen::save_layout() {
         stream << item.cell.min_w << item.cell.min_h;
     }
 
-    QString encoded = data.toBase64();
+    QString encoded = buf.toBase64();
     QPointer<DashboardScreen> self = this;
-    QtConcurrent::run(
+    (void)QtConcurrent::run(
         [encoded]() { fincept::SettingsRepository::instance().set("dashboard_canvas_layout", encoded, "dashboard"); });
 }
 
 void DashboardScreen::restore_layout() {
     QPointer<DashboardScreen> self = this;
-    QtConcurrent::run([self]() {
+    (void)QtConcurrent::run([self]() {
         auto result = fincept::SettingsRepository::instance().get("dashboard_canvas_layout");
 
         QMetaObject::invokeMethod(

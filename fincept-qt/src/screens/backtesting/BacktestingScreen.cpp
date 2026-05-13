@@ -3,6 +3,8 @@
 
 #include "core/logging/Logger.h"
 #include "core/session/ScreenStateManager.h"
+#include "core/symbol/SymbolContext.h"
+#include "core/symbol/SymbolRef.h"
 #include "services/backtesting/BacktestingService.h"
 #include "services/file_manager/FileManagerService.h"
 #include "ui/theme/Theme.h"
@@ -155,6 +157,46 @@ void BacktestingScreen::build_ui() {
 
 // ── Top Bar: Provider tabs + Run button ──────────────────────────────────────
 
+namespace {
+
+// Every chip on the top bar (brand label, provider tabs, RUN, status) shares
+// the same outer geometry. The global QSS in ThemeManager applies a default
+// `padding` to every QPushButton — we override that here with explicit
+// min-height / max-height / padding so all chips render at exactly the same
+// box size regardless of widget type or selection state.
+constexpr int kPillHeight = 24;
+constexpr int kPillPadH = 10;
+
+QString pill_qss(const QString& selector,
+                 const QString& fg,
+                 const QString& bg,
+                 const QString& border,
+                 int font_px,
+                 const QString& font_family,
+                 const QString& weight = "700") {
+    // Subtract 2px (the 1px top + bottom border) from min/max-height so the
+    // total outer box equals kPillHeight in Qt's stylesheet box model.
+    return QString("%1 {"
+                   "  color:%2; background:%3; border:1px solid %4;"
+                   "  font-family:%5; font-size:%6px; font-weight:%7;"
+                   "  padding:0 %8px;"
+                   "  min-height:%9px; max-height:%9px;"
+                   "}")
+        .arg(selector, fg, bg, border, font_family)
+        .arg(font_px)
+        .arg(weight)
+        .arg(kPillPadH)
+        .arg(kPillHeight - 2);
+}
+
+void apply_pill_geometry(QWidget* w) {
+    w->setFixedHeight(kPillHeight);
+    w->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    w->setContentsMargins(0, 0, 0, 0);
+}
+
+} // namespace
+
 QWidget* BacktestingScreen::build_top_bar() {
     auto* bar = new QWidget(this);
     bar->setFixedHeight(34);
@@ -165,14 +207,18 @@ QWidget* BacktestingScreen::build_top_bar() {
     hl->setContentsMargins(12, 0, 12, 0);
     hl->setSpacing(8);
 
+    const QString font_family = ui::fonts::DATA_FAMILY;
+    const int font_px = ui::fonts::TINY;
+
+    // Brand chip
     auto* brand = new QLabel("BACKTESTING", bar);
-    brand->setStyleSheet(QString("color:%1; font-size:%2px; font-weight:700; font-family:%3;"
-                                 "padding:4px 12px; background:rgba(217,119,6,0.1);"
-                                 "border:1px solid %4;")
-                             .arg(ui::colors::AMBER())
-                             .arg(ui::fonts::TINY)
-                             .arg(ui::fonts::DATA_FAMILY)
-                             .arg(ui::colors::AMBER_DIM()));
+    brand->setAlignment(Qt::AlignCenter);
+    apply_pill_geometry(brand);
+    brand->setStyleSheet(pill_qss("QLabel",
+                                  ui::colors::AMBER(),
+                                  "rgba(217,119,6,0.1)",
+                                  ui::colors::AMBER_DIM(),
+                                  font_px, font_family));
     hl->addWidget(brand);
 
     auto* div = new QWidget(bar);
@@ -180,11 +226,13 @@ QWidget* BacktestingScreen::build_top_bar() {
     div->setStyleSheet(QString("background:%1;").arg(ui::colors::BORDER_DIM()));
     hl->addWidget(div);
 
-    // Provider tabs
+    // Provider tabs — geometry pinned here, colour applied later in
+    // update_provider_buttons() using the same pill_qss template.
     for (int i = 0; i < providers_.size(); ++i) {
         const auto& p = providers_[i];
         auto* btn = new QPushButton(p.display_name, bar);
         btn->setCursor(Qt::PointingHandCursor);
+        apply_pill_geometry(btn);
         connect(btn, &QPushButton::clicked, this, [this, i]() { on_provider_changed(i); });
         hl->addWidget(btn);
         provider_buttons_.append(btn);
@@ -192,34 +240,32 @@ QWidget* BacktestingScreen::build_top_bar() {
 
     hl->addStretch(1);
 
-    // Run button — accent amber style per DESIGN_SYSTEM 5.5
+    // Run button
     run_button_ = new QPushButton("RUN", bar);
     run_button_->setCursor(Qt::PointingHandCursor);
+    apply_pill_geometry(run_button_);
     run_button_->setStyleSheet(
-        QString("QPushButton { background:rgba(217,119,6,0.1); color:%1; font-family:%2; font-size:%3px;"
-                "font-weight:700; border:1px solid %4; padding:0 12px;"
-                "letter-spacing:1px; }"
-                "QPushButton:hover { background:%1; color:%5; }"
-                "QPushButton:disabled { background:%6; color:%7; border-color:%8; }")
-            .arg(ui::colors::AMBER())
-            .arg(ui::fonts::DATA_FAMILY)
-            .arg(ui::fonts::SMALL)
-            .arg(ui::colors::AMBER_DIM())
-            .arg(ui::colors::BG_BASE())
-            .arg(ui::colors::BG_RAISED())
-            .arg(ui::colors::TEXT_DIM())
-            .arg(ui::colors::BORDER_DIM()));
+        pill_qss("QPushButton",
+                 ui::colors::AMBER(),
+                 "rgba(217,119,6,0.1)",
+                 ui::colors::AMBER_DIM(),
+                 font_px, font_family) +
+        QString("QPushButton:hover { background:%1; color:%2; }"
+                "QPushButton:disabled { background:%3; color:%4; border-color:%5; }")
+            .arg(ui::colors::AMBER(), ui::colors::BG_BASE(),
+                 ui::colors::BG_RAISED(), ui::colors::TEXT_DIM(), ui::colors::BORDER_DIM()));
     connect(run_button_, &QPushButton::clicked, this, &BacktestingScreen::on_run);
     hl->addWidget(run_button_);
 
-    // Status dot
+    // Status chip
     status_dot_ = new QLabel("READY", bar);
-    status_dot_->setStyleSheet(QString("color:%1; font-size:%2px; font-weight:700; font-family:%3;"
-                                       "padding:3px 8px; background:rgba(22,163,74,0.08);"
-                                       "border:1px solid rgba(22,163,74,0.25);")
-                                   .arg(ui::colors::POSITIVE())
-                                   .arg(ui::fonts::TINY)
-                                   .arg(ui::fonts::DATA_FAMILY));
+    status_dot_->setAlignment(Qt::AlignCenter);
+    apply_pill_geometry(status_dot_);
+    status_dot_->setStyleSheet(pill_qss("QLabel",
+                                        ui::colors::POSITIVE(),
+                                        "rgba(22,163,74,0.08)",
+                                        "rgba(22,163,74,0.25)",
+                                        font_px, font_family));
     hl->addWidget(status_dot_);
 
     return bar;
@@ -543,6 +589,9 @@ QWidget* BacktestingScreen::build_right_panel() {
     symbols_edit_->setPlaceholderText("SPY,AAPL,MSFT");
     symbols_edit_->setStyleSheet(input_style);
     vl->addWidget(symbols_edit_);
+    // Publish the first symbol to the linked group when the user finishes editing.
+    connect(symbols_edit_, &QLineEdit::editingFinished, this,
+            [this]() { publish_first_symbol_to_group(); });
 
     auto* cap_lbl = new QLabel("INITIAL CAPITAL ($)", content);
     cap_lbl->setStyleSheet(label_style);
@@ -946,6 +995,82 @@ QWidget* BacktestingScreen::build_right_panel() {
         cmd_config_stack_->addWidget(page);
     }
 
+    // Page 9: labels_to_signals — converts ML labels into trading signals.
+    // Reuses the same horizon/threshold spinboxes from the labels page (they
+    // describe the underlying label generation) and only adds a label-type
+    // selector here.
+    {
+        auto* page = new QWidget(this);
+        auto* pl = new QVBoxLayout(page);
+        pl->setContentsMargins(0, 0, 0, 0);
+        pl->setSpacing(4);
+        auto* t = new QLabel("LABELS -> SIGNALS", page);
+        t->setStyleSheet(section_style);
+        pl->addWidget(t);
+
+        auto* tl = new QLabel("LABEL TYPE", page);
+        tl->setStyleSheet(label_style);
+        pl->addWidget(tl);
+        l2s_label_type_combo_ = new QComboBox(page);
+        l2s_label_type_combo_->setStyleSheet(combo_style);
+        for (const auto& lt : label_types())
+            l2s_label_type_combo_->addItem(lt);
+        pl->addWidget(l2s_label_type_combo_);
+
+        pl->addStretch();
+        cmd_config_stack_->addWidget(page);
+    }
+
+    // Page 10: indicator_sweep — runs an indicator across a parameter grid
+    // and returns aggregated stats per parameter value. Indicator combo is
+    // populated dynamically via on_result("get_indicators").
+    {
+        auto* page = new QWidget(this);
+        auto* pl = new QVBoxLayout(page);
+        pl->setContentsMargins(0, 0, 0, 0);
+        pl->setSpacing(4);
+        auto* t = new QLabel("INDICATOR SWEEP", page);
+        t->setStyleSheet(section_style);
+        pl->addWidget(t);
+
+        auto* il = new QLabel("INDICATOR", page);
+        il->setStyleSheet(label_style);
+        pl->addWidget(il);
+        sweep_indicator_combo_ = new QComboBox(page);
+        sweep_indicator_combo_->setStyleSheet(combo_style);
+        pl->addWidget(sweep_indicator_combo_);
+
+        auto* mnl = new QLabel("MIN", page);
+        mnl->setStyleSheet(label_style);
+        pl->addWidget(mnl);
+        sweep_min_spin_ = new QSpinBox(page);
+        sweep_min_spin_->setRange(1, 1000);
+        sweep_min_spin_->setValue(5);
+        sweep_min_spin_->setStyleSheet(input_style);
+        pl->addWidget(sweep_min_spin_);
+
+        auto* mxl = new QLabel("MAX", page);
+        mxl->setStyleSheet(label_style);
+        pl->addWidget(mxl);
+        sweep_max_spin_ = new QSpinBox(page);
+        sweep_max_spin_->setRange(1, 1000);
+        sweep_max_spin_->setValue(50);
+        sweep_max_spin_->setStyleSheet(input_style);
+        pl->addWidget(sweep_max_spin_);
+
+        auto* sl = new QLabel("STEP", page);
+        sl->setStyleSheet(label_style);
+        pl->addWidget(sl);
+        sweep_step_spin_ = new QSpinBox(page);
+        sweep_step_spin_->setRange(1, 100);
+        sweep_step_spin_->setValue(1);
+        sweep_step_spin_->setStyleSheet(input_style);
+        pl->addWidget(sweep_step_spin_);
+
+        pl->addStretch();
+        cmd_config_stack_->addWidget(page);
+    }
+
     cmd_config_stack_->setCurrentIndex(0);
     vl->addWidget(cmd_config_stack_);
 
@@ -1027,21 +1152,18 @@ void BacktestingScreen::on_provider_changed(int index) {
 void BacktestingScreen::update_provider_buttons() {
     for (int i = 0; i < provider_buttons_.size(); ++i) {
         const auto& p = providers_[i];
-        bool active = (i == active_provider_);
+        const bool active = (i == active_provider_);
+        const QString rgb = QString("%1,%2,%3").arg(p.color.red()).arg(p.color.green()).arg(p.color.blue());
+        const QString fg = active ? p.color.name() : ui::colors::TEXT_TERTIARY();
+        const QString bg = active ? QString("rgba(%1,0.12)").arg(rgb) : QString("transparent");
+        const QString border = active ? QString("rgba(%1,0.3)").arg(rgb) : ui::colors::BORDER_DIM();
+        const QString weight = active ? "700" : "400";
+
+        // Same pill template as the brand / RUN / status chips so geometry is
+        // identical regardless of selection state.
         provider_buttons_[i]->setStyleSheet(
-            QString("QPushButton { color:%1; font-size:%2px; font-family:%3;"
-                    "padding:0 10px; border:1px solid %4;"
-                    "background:%5; font-weight:%6; }"
-                    "QPushButton:hover { background:rgba(%7,0.15); }")
-                .arg(active ? p.color.name() : ui::colors::TEXT_TERTIARY())
-                .arg(ui::fonts::TINY)
-                .arg(ui::fonts::DATA_FAMILY)
-                .arg(active ? QString("rgba(%1,%2,%3,0.3)").arg(p.color.red()).arg(p.color.green()).arg(p.color.blue())
-                            : ui::colors::BORDER_DIM())
-                .arg(active ? QString("rgba(%1,%2,%3,0.12)").arg(p.color.red()).arg(p.color.green()).arg(p.color.blue())
-                            : "transparent")
-                .arg(active ? "700" : "400")
-                .arg(QString("%1,%2,%3").arg(p.color.red()).arg(p.color.green()).arg(p.color.blue())));
+            pill_qss("QPushButton", fg, bg, border, ui::fonts::TINY, ui::fonts::DATA_FAMILY, weight) +
+            QString("QPushButton:hover { background:rgba(%1,0.15); }").arg(rgb));
     }
 }
 
@@ -1052,9 +1174,13 @@ void BacktestingScreen::on_command_changed(int index) {
     active_command_ = index;
     update_command_buttons();
 
-    // Map command index to config stack page
+    // Map command index to config stack page. The page order in
+    // build_left_panel must match the command order in
+    // BacktestingTypes::all_commands() — adding a new command requires
+    // appending a matching cmd_config_stack_ page in the same position.
     // commands: backtest(0), optimize(1), walk_forward(2), indicator(3),
-    //           indicator_signals(4), labels(5), splits(6), returns(7), signals(8)
+    //           indicator_signals(4), labels(5), splits(6), returns(7),
+    //           signals(8), labels_to_signals(9), indicator_sweep(10)
     cmd_config_stack_->setCurrentIndex(index);
 }
 
@@ -1275,6 +1401,26 @@ QJsonObject BacktestingScreen::gather_args() {
         args["generatorType"] = signal_gen_combo_->currentText();
     }
 
+    if (cmd_id == "labels_to_signals") {
+        // Wire the same horizon/threshold inputs the labels page uses — the
+        // Python pipeline first generates labels and then converts them to
+        // signals, so the upstream label config still applies.
+        args["labelType"] = l2s_label_type_combo_->currentText();
+        QJsonObject params;
+        params["horizon"] = labels_horizon_spin_->value();
+        params["threshold"] = labels_threshold_spin_->value();
+        args["params"] = params;
+    }
+
+    if (cmd_id == "indicator_sweep") {
+        args["indicator"] = sweep_indicator_combo_->currentData().toString();
+        QJsonObject range;
+        range["min"] = sweep_min_spin_->value();
+        range["max"] = sweep_max_spin_->value();
+        range["step"] = sweep_step_spin_->value();
+        args["paramRange"] = range;
+    }
+
     return args;
 }
 
@@ -1324,7 +1470,7 @@ void BacktestingScreen::clear_results() {
     raw_json_edit_->clear();
 }
 
-void BacktestingScreen::display_result(const QJsonObject& data) {
+void BacktestingScreen::display_result(const QJsonObject& payload) {
     clear_results();
 
     auto accent = providers_[active_provider_].color.name();
@@ -1339,9 +1485,9 @@ void BacktestingScreen::display_result(const QJsonObject& data) {
     summary_layout_->addWidget(header);
 
     // Extract performance metrics (handle nested structures)
-    auto perf = data.contains("performance") ? data["performance"].toObject()
-                : data.contains("data")      ? data["data"].toObject().value("performance").toObject()
-                                             : data;
+    auto perf = payload.contains("performance") ? payload["performance"].toObject()
+                : payload.contains("payload")      ? payload["payload"].toObject().value("performance").toObject()
+                                             : payload;
 
     // Key metric cards in grid
     auto* cards = new QWidget(summary_container_);
@@ -1406,8 +1552,8 @@ void BacktestingScreen::display_result(const QJsonObject& data) {
         cards->deleteLater();
 
     // If result has a status/message, show it
-    if (data.contains("status")) {
-        auto status = data["status"].toString();
+    if (payload.contains("status")) {
+        auto status = payload["status"].toString();
         auto* status_lbl = new QLabel(QString("Status: %1").arg(status), summary_container_);
         status_lbl->setStyleSheet(QString("color:%1; font-size:%2px; font-family:%3; padding:8px;")
                                       .arg(status == "success" ? ui::colors::POSITIVE() : ui::colors::WARNING())
@@ -1441,8 +1587,8 @@ void BacktestingScreen::display_result(const QJsonObject& data) {
     }
 
     // ── TRADES tab ──
-    auto trades = data.contains("trades") ? data["trades"].toArray()
-                  : data.contains("data") ? data["data"].toObject().value("trades").toArray()
+    auto trades = payload.contains("trades") ? payload["trades"].toArray()
+                  : payload.contains("payload") ? payload["payload"].toObject().value("trades").toArray()
                                           : QJsonArray();
 
     if (!trades.isEmpty() && trades[0].isObject()) {
@@ -1469,7 +1615,7 @@ void BacktestingScreen::display_result(const QJsonObject& data) {
     }
 
     // ── RAW JSON tab ──
-    raw_json_edit_->setPlainText(QJsonDocument(data).toJson(QJsonDocument::Indented));
+    raw_json_edit_->setPlainText(QJsonDocument(payload).toJson(QJsonDocument::Indented));
 
     // Switch to summary tab
     result_tabs_->setCurrentIndex(0);
@@ -1496,13 +1642,13 @@ void BacktestingScreen::display_error(const QString& msg) {
 
 // ── Signal handlers ──────────────────────────────────────────────────────────
 
-void BacktestingScreen::on_result(const QString& provider, const QString& command, const QJsonObject& data) {
+void BacktestingScreen::on_result(const QString& provider, const QString& command, const QJsonObject& payload) {
     // Route background metadata commands — don't touch run state or results UI
     if (command == "get_strategies") {
         // Only apply if result is for the currently-active provider
         if (provider != providers_[active_provider_].slug)
             return;
-        strategies_ = services::backtest::strategies_from_json(data);
+        strategies_ = services::backtest::strategies_from_json(payload);
         auto cats = services::backtest::categories_from_strategies(strategies_);
         strategy_category_combo_->blockSignals(true);
         strategy_category_combo_->clear();
@@ -1516,10 +1662,14 @@ void BacktestingScreen::on_result(const QString& provider, const QString& comman
     if (command == "get_indicators") {
         if (provider != providers_[active_provider_].slug)
             return;
-        // Populate both indicator combos from {indicators:{Cat:[{id,name}]}}
-        auto ind_obj = data.value("indicators").toObject();
+        // Populate all three indicator combos from {indicators:{Cat:[{id,name}]}}.
+        // sweep_indicator_combo_ may be null if a future refactor strips the
+        // sweep page — guard so we don't crash older builds during migration.
+        auto ind_obj = payload.value("indicators").toObject();
         indicator_combo_->clear();
         ind_signal_indicator_combo_->clear();
+        if (sweep_indicator_combo_)
+            sweep_indicator_combo_->clear();
         for (const auto& cat : ind_obj.keys()) {
             for (const auto& iv : ind_obj.value(cat).toArray()) {
                 auto o = iv.toObject();
@@ -1527,6 +1677,8 @@ void BacktestingScreen::on_result(const QString& provider, const QString& comman
                 auto name = o.value("name").toString(id);
                 indicator_combo_->addItem(name, id);
                 ind_signal_indicator_combo_->addItem(name, id);
+                if (sweep_indicator_combo_)
+                    sweep_indicator_combo_->addItem(name, id);
             }
         }
         return;
@@ -1536,7 +1688,7 @@ void BacktestingScreen::on_result(const QString& provider, const QString& comman
     is_running_ = false;
     run_button_->setEnabled(true);
     set_status_state("READY", ui::colors::POSITIVE, "rgba(22,163,74,0.08)");
-    display_result(data);
+    display_result(payload);
     LOG_INFO("Backtesting", QString("[%1/%2] Complete").arg(provider, command));
 }
 
@@ -1553,14 +1705,23 @@ void BacktestingScreen::on_command_options_loaded(const QString& provider, const
         combo->setCurrentIndex(0);
     };
 
-    repopulate(pos_sizing_combo_, options.value("position_sizing_methods").toArray());
-    repopulate(opt_objective_combo_, options.value("optimize_objectives").toArray());
-    repopulate(opt_method_combo_, options.value("optimize_methods").toArray());
-    repopulate(labels_type_combo_, options.value("label_types").toArray());
-    repopulate(splitter_type_combo_, options.value("splitter_types").toArray());
-    repopulate(signal_gen_combo_, options.value("signal_generators").toArray());
-    repopulate(ind_signal_mode_combo_, options.value("indicator_signal_modes").toArray());
-    repopulate(returns_type_combo_, options.value("returns_analysis_types").toArray());
+    // Providers using json_response() emit camelCase keys; fincept_provider
+    // uses raw json.dumps so its keys stay snake_case. Try camelCase first
+    // (the dominant form across vectorbt/bt/backtestingpy/fasttrade/zipline),
+    // then fall back to snake_case for fincept.
+    auto pick = [&](const char* camel, const char* snake) -> QJsonArray {
+        auto a = options.value(camel).toArray();
+        return a.isEmpty() ? options.value(snake).toArray() : a;
+    };
+
+    repopulate(pos_sizing_combo_, pick("positionSizingMethods", "position_sizing_methods"));
+    repopulate(opt_objective_combo_, pick("optimizeObjectives", "optimize_objectives"));
+    repopulate(opt_method_combo_, pick("optimizeMethods", "optimize_methods"));
+    repopulate(labels_type_combo_, pick("labelTypes", "label_types"));
+    repopulate(splitter_type_combo_, pick("splitterTypes", "splitter_types"));
+    repopulate(signal_gen_combo_, pick("signalGenerators", "signal_generators"));
+    repopulate(ind_signal_mode_combo_, pick("indicatorSignalModes", "indicator_signal_modes"));
+    repopulate(returns_type_combo_, pick("returnsAnalysisTypes", "returns_analysis_types"));
 
     LOG_INFO("Backtesting", QString("[%1] Command options loaded").arg(provider));
 }
@@ -1588,6 +1749,41 @@ void BacktestingScreen::restore_state(const QVariantMap& state) {
         on_provider_changed(prov);
     if (cmd != active_command_)
         on_command_changed(cmd);
+}
+
+// ── IGroupLinked ─────────────────────────────────────────────────────────────
+
+SymbolRef BacktestingScreen::current_symbol() const {
+    if (!symbols_edit_)
+        return {};
+    const QString text = symbols_edit_->text().trimmed();
+    if (text.isEmpty())
+        return {};
+    // First comma-separated token is the "active" symbol for group linking.
+    const QString first = text.section(',', 0, 0).trimmed();
+    if (first.isEmpty())
+        return {};
+    return SymbolRef::equity(first);
+}
+
+void BacktestingScreen::on_group_symbol_changed(const SymbolRef& ref) {
+    if (!ref.is_valid() || !symbols_edit_)
+        return;
+    // Replace the entire field — adding to a comma list silently would
+    // surprise users who have a multi-symbol backtest configured.
+    if (symbols_edit_->text().trimmed() == ref.symbol)
+        return;
+    QSignalBlocker block(symbols_edit_); // avoid bouncing the publish back
+    symbols_edit_->setText(ref.symbol);
+}
+
+void BacktestingScreen::publish_first_symbol_to_group() {
+    if (link_group_ == SymbolGroup::None)
+        return;
+    const SymbolRef ref = current_symbol();
+    if (!ref.is_valid())
+        return;
+    SymbolContext::instance().set_group_symbol(link_group_, ref, this);
 }
 
 } // namespace fincept::screens

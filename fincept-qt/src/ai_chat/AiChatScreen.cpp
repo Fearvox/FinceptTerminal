@@ -2,7 +2,9 @@
 
 #include "ai_chat/AiChatScreen.h"
 
+#include "ai_chat/ChatBubbleFactory.h"
 #include "ai_chat/LlmService.h"
+#include "core/events/EventBus.h"
 #include "core/logging/Logger.h"
 #include "core/session/ScreenStateManager.h"
 #include "mcp/McpService.h"
@@ -37,6 +39,7 @@
 #include <QToolButton>
 #include <QtConcurrent/QtConcurrent>
 
+#include <cmath>
 #include <memory>
 
 namespace fincept::screens {
@@ -46,69 +49,11 @@ static constexpr const char* TAG = "AiChatScreen";
 namespace fnt = fincept::ui::fonts;
 namespace col = fincept::ui::colors;
 
-// ── Style helpers ─────────────────────────────────────────────────────────────
-
-static QString bubble_style(const QString& role) {
-    if (role == "user")
-        return "background:rgba(120,53,15,0.45);border:1px solid rgba(217,119,6,0.28);"
-               "border-radius:0px;padding:10px 14px;";
-    if (role == "system")
-        return "background:rgba(50,12,12,0.85);border:1px solid rgba(220,38,38,0.22);"
-               "border-radius:0px;padding:10px 14px;";
-    return QString("background:%1;border:1px solid %2;border-radius:0px;padding:10px 14px;")
-        .arg(col::BG_SURFACE(), col::BORDER_DIM());
-}
-
-static QString body_color(const QString& role) {
-    if (role == "user")
-        return "#fff7ed";
-    if (role == "system")
-        return "#fee2e2";
-    return col::TEXT_PRIMARY();
-}
-
-// Default stylesheet for rendered markdown inside QTextEdit / QLabel bubbles.
-// Comprehensive styling for LLM responses: paragraphs, lists, headings,
-// code blocks, blockquotes, tables, and links.
-static QString markdown_css(const QString& text_color) {
-    return QString("body { color: %1; line-height: 1.5; }"
-                   "p { margin-top: 6px; margin-bottom: 6px; }"
-                   "ul, ol { margin-top: 4px; margin-bottom: 4px; padding-left: 20px; }"
-                   "li { margin-top: 3px; margin-bottom: 3px; }"
-                   "h1 { margin-top: 14px; margin-bottom: 6px; color: %2; font-size: 18px; font-weight: 700; }"
-                   "h2 { margin-top: 12px; margin-bottom: 5px; color: %2; font-size: 16px; font-weight: 700; }"
-                   "h3 { margin-top: 10px; margin-bottom: 4px; color: %2; font-size: 15px; font-weight: 600; }"
-                   "h4 { margin-top: 8px; margin-bottom: 4px; color: %2; font-size: 14px; font-weight: 600; }"
-                   "hr { margin-top: 10px; margin-bottom: 10px; border: none; "
-                   "     border-top: 1px solid %3; }"
-                   "a { color: %2; text-decoration: underline; }"
-                   "code { background: %4; color: %2; padding: 1px 4px; "
-                   "       font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; }"
-                   "pre { background: %4; border: 1px solid %3; padding: 10px 12px; "
-                   "      margin-top: 6px; margin-bottom: 6px; "
-                   "      font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; }"
-                   "blockquote { border-left: 3px solid %2; padding-left: 12px; "
-                   "             margin-top: 6px; margin-bottom: 6px; color: %5; }"
-                   "table { border-collapse: collapse; margin-top: 6px; margin-bottom: 6px; }"
-                   "th { background: %4; border: 1px solid %3; padding: 4px 8px; "
-                   "     font-weight: 600; color: %2; }"
-                   "td { border: 1px solid %3; padding: 4px 8px; }"
-                   "strong { color: %1; font-weight: 700; }"
-                   "em { font-style: italic; }")
-        .arg(text_color, col::AMBER(), col::BORDER_MED(), col::BG_RAISED(), col::TEXT_SECONDARY());
-}
-
-// Override Qt's default blue palette on QTextEdit to match Obsidian theme.
-static void apply_obsidian_palette(QTextEdit* edit) {
-    QPalette p = edit->palette();
-    p.setColor(QPalette::Link, QColor(col::AMBER()));
-    p.setColor(QPalette::LinkVisited, QColor(col::AMBER()));
-    p.setColor(QPalette::Highlight, QColor(col::AMBER_DIM()));
-    p.setColor(QPalette::HighlightedText, QColor(col::TEXT_PRIMARY()));
-    p.setColor(QPalette::Base, Qt::transparent);
-    p.setColor(QPalette::Text, QColor(col::TEXT_PRIMARY()));
-    edit->setPalette(p);
-}
+// Bubble visuals live in ChatBubbleFactory — shared with AiChatBubble.
+// Only the column max widths are local config: the tab gets more horizontal
+// room than the floating bubble.
+static constexpr int kUserColMaxWidth = 560;
+static constexpr int kAiColMaxWidth = 680;
 
 static QString generate_session_title() {
     static const QStringList prefixes = {"Amber", "Apex", "Atlas", "Echo", "Flux", "Nova", "Slate", "Vector"};
@@ -219,10 +164,51 @@ void AiChatScreen::showEvent(QShowEvent* e) {
     connect(&ai_chat::LlmService::instance(), &ai_chat::LlmService::config_changed, this,
             &AiChatScreen::on_provider_changed, Qt::UniqueConnection);
     update_stats();
+    subscribe_mcp_events();
 }
 
 void AiChatScreen::hideEvent(QHideEvent* e) {
     QWidget::hideEvent(e);
+    unsubscribe_mcp_events();
+}
+
+// ── MCP-driven UI sync ──────────────────────────────────────────────────────
+// MCP set_active_llm publishes llm.provider_changed when the LLM or Finagent
+// switches the active provider. We force a LlmService::reload_config() so
+// the next outgoing message uses the new provider. reload_config emits
+// LlmService::config_changed which is already wired (above) to
+// on_provider_changed for the header label refresh.
+
+void AiChatScreen::subscribe_mcp_events() {
+    if (!mcp_event_subs_.isEmpty()) return; // idempotent
+
+    QPointer<AiChatScreen> self = this;
+    auto on_provider_event = [self](const QVariantMap&) {
+        if (!self) return;
+        QMetaObject::invokeMethod(self.data(), [self]() {
+            if (!self) return;
+            ai_chat::LlmService::instance().reload_config();
+        }, Qt::QueuedConnection);
+    };
+
+    auto on_session_created = [self](const QVariantMap&) {
+        if (!self) return;
+        QMetaObject::invokeMethod(self.data(), [self]() {
+            if (!self) return;
+            self->load_sessions();
+        }, Qt::QueuedConnection);
+    };
+
+    auto& bus = EventBus::instance();
+    mcp_event_subs_.append(bus.subscribe("llm.provider_changed",   on_provider_event));
+    mcp_event_subs_.append(bus.subscribe("ai_chat.session_created", on_session_created));
+}
+
+void AiChatScreen::unsubscribe_mcp_events() {
+    auto& bus = EventBus::instance();
+    for (auto id : mcp_event_subs_)
+        bus.unsubscribe(id);
+    mcp_event_subs_.clear();
 }
 
 void AiChatScreen::resizeEvent(QResizeEvent* e) {
@@ -246,7 +232,10 @@ void AiChatScreen::build_ui() {
 
 void AiChatScreen::build_sidebar() {
     sidebar_ = new QWidget;
-    sidebar_->setFixedWidth(280);
+    // Use min/max width pair instead of setFixedWidth so the collapse
+    // animation can drive maximumWidth between 0 and kSidebarExpandedWidth.
+    sidebar_->setMinimumWidth(0);
+    sidebar_->setMaximumWidth(kSidebarExpandedWidth);
     sidebar_->setStyleSheet(
         QString("background:%1;border-right:1px solid %2;").arg(col::BG_SURFACE(), col::BORDER_DIM()));
 
@@ -426,8 +415,23 @@ QWidget* AiChatScreen::build_header_bar() {
     bar->setFixedHeight(52);
     bar->setStyleSheet(QString("background:%1;border-bottom:1px solid %2;").arg(col::BG_RAISED(), col::BORDER_DIM()));
     auto* hl = new QHBoxLayout(bar);
-    hl->setContentsMargins(20, 0, 16, 0);
+    hl->setContentsMargins(8, 0, 16, 0);
     hl->setSpacing(10);
+
+    // Sidebar collapse toggle. Lives at the left edge of the chat header so
+    // it remains visible (and can re-expand the sidebar) even when the
+    // sidebar is collapsed to width 0.
+    sidebar_toggle_btn_ = new QPushButton("‹");
+    sidebar_toggle_btn_->setFixedSize(28, 28);
+    sidebar_toggle_btn_->setCursor(Qt::PointingHandCursor);
+    sidebar_toggle_btn_->setToolTip("Collapse sidebar  (Ctrl+B)");
+    sidebar_toggle_btn_->setShortcut(QKeySequence("Ctrl+B"));
+    sidebar_toggle_btn_->setStyleSheet(QString("QPushButton{background:transparent;color:%1;border:1px solid %2;"
+                                               "border-radius:0px;font-size:18px;font-weight:700;padding:0;}"
+                                               "QPushButton:hover{background:%3;color:%4;border-color:%4;}")
+                                           .arg(col::TEXT_SECONDARY(), col::BORDER_DIM(), col::BG_HOVER(), col::AMBER()));
+    connect(sidebar_toggle_btn_, &QPushButton::clicked, this, &AiChatScreen::on_toggle_sidebar);
+    hl->addWidget(sidebar_toggle_btn_);
 
     // Status dot
     hdr_status_dot_ = new QLabel;
@@ -656,6 +660,41 @@ bool AiChatScreen::eventFilter(QObject* obj, QEvent* event) {
         }
     }
     return QWidget::eventFilter(obj, event);
+}
+
+void AiChatScreen::on_toggle_sidebar() {
+    apply_sidebar_collapsed(!sidebar_collapsed_, /*animate=*/true);
+    ScreenStateManager::instance().notify_changed(this);
+}
+
+void AiChatScreen::apply_sidebar_collapsed(bool collapsed, bool animate) {
+    sidebar_collapsed_ = collapsed;
+    if (!sidebar_)
+        return;
+
+    const int target = collapsed ? 0 : kSidebarExpandedWidth;
+
+    // Lazily create the animation so the helper works even before the first
+    // user toggle (e.g. when restore_state runs before the screen is shown).
+    if (!sidebar_anim_) {
+        sidebar_anim_ = new QPropertyAnimation(sidebar_, "maximumWidth", this);
+        sidebar_anim_->setDuration(180);
+        sidebar_anim_->setEasingCurve(QEasingCurve::OutCubic);
+    }
+
+    sidebar_anim_->stop();
+    if (animate) {
+        sidebar_anim_->setStartValue(sidebar_->maximumWidth());
+        sidebar_anim_->setEndValue(target);
+        sidebar_anim_->start();
+    } else {
+        sidebar_->setMaximumWidth(target);
+    }
+
+    if (sidebar_toggle_btn_) {
+        sidebar_toggle_btn_->setText(collapsed ? "›" : "‹");
+        sidebar_toggle_btn_->setToolTip(collapsed ? "Expand sidebar  (Ctrl+B)" : "Collapse sidebar  (Ctrl+B)");
+    }
 }
 
 void AiChatScreen::on_search_changed(const QString& text) {
@@ -910,7 +949,7 @@ void AiChatScreen::on_send() {
             });
     } else {
         QPointer<AiChatScreen> self = this;
-        QtConcurrent::run([self, text, hist_copy]() {
+        (void)QtConcurrent::run([self, text, hist_copy]() {
             auto resp = ai_chat::LlmService::instance().chat(text, hist_copy);
             QMetaObject::invokeMethod(
                 qApp,
@@ -925,26 +964,19 @@ void AiChatScreen::on_send() {
 
 void AiChatScreen::on_stream_chunk(const QString& chunk, bool done) {
     // Snapshot QPointer to local — prevents TOCTOU between null-check and use.
-    QTextEdit* bubble = streaming_bubble_;
+    QLabel* bubble = streaming_bubble_;
     if (!bubble)
         return;
 
     // Tool-call clear sentinel: reset bubble content (removes partial XML)
     if (chunk.startsWith("\x01__TOOL_CALL_CLEAR__")) {
-        bubble->clear();
-        bubble->setPlainText("Calling tool...");
+        fincept::ai_chat::ChatBubbleFactory::replace_streaming_text(bubble, "Calling tool...");
         scroll_to_bottom();
         return;
     }
 
     if (!chunk.isEmpty()) {
-        // If bubble shows the "Calling tool..." placeholder, replace it
-        if (bubble->toPlainText() == "Calling tool...") {
-            bubble->setPlainText(chunk);
-        } else {
-            bubble->moveCursor(QTextCursor::End);
-            bubble->insertPlainText(chunk);
-        }
+        fincept::ai_chat::ChatBubbleFactory::append_streaming_chunk(bubble, chunk);
         scroll_to_bottom();
     }
     Q_UNUSED(done)
@@ -954,38 +986,51 @@ void AiChatScreen::on_streaming_done(ai_chat::LlmResponse response) {
     streaming_ = false;
     show_typing(false);
 
-    // If non-streaming path: create bubble now with full content
-    if (!streaming_bubble_ && response.success && !response.content.isEmpty()) {
+    // Ensure a bubble exists for any terminal state (success + content,
+    // failure with an error message, or success-but-empty). Without this,
+    // a kimi/openai response that arrives via the non-streaming fallback
+    // with no per-chunk emission, or fails before any chunk lands, would
+    // be silently dropped — the typing indicator hides and the input is
+    // re-enabled but nothing is shown.
+    const bool need_bubble = !streaming_bubble_ &&
+                             ((response.success && !response.content.isEmpty()) ||
+                              !response.success ||
+                              response.content.isEmpty());
+    if (need_bubble)
         streaming_bubble_ = add_streaming_bubble();
-    }
 
     set_input_enabled(true);
 
     if (!response.success) {
-        if (streaming_bubble_)
-            streaming_bubble_->setPlainText("Error: " + response.error);
+        if (streaming_bubble_) {
+            const QString err = response.error.isEmpty() ? QStringLiteral("Error: request failed")
+                                                         : (QStringLiteral("Error: ") + response.error);
+            fincept::ai_chat::ChatBubbleFactory::replace_streaming_text(streaming_bubble_, err);
+        }
+        LOG_WARN("AiChat", QString("LLM request failed: %1").arg(response.error));
+        streaming_bubble_ = nullptr;
+        return;
+    }
+
+    // Success but empty body — surface a hint instead of silently doing nothing.
+    if (response.content.isEmpty()) {
+        if (streaming_bubble_) {
+            const QString hint = QStringLiteral("(empty response — model returned no content)");
+            fincept::ai_chat::ChatBubbleFactory::replace_streaming_text(streaming_bubble_, hint);
+        }
+        LOG_WARN("AiChat", "LLM returned success with empty content");
         streaming_bubble_ = nullptr;
         return;
     }
 
     const QString content = response.content;
     if (streaming_bubble_) {
-        // Get final text (either from response or what was streamed)
-        QString final_text = streaming_bubble_->toPlainText();
-        if (!content.isEmpty() && final_text.isEmpty())
-            final_text = content;
-        // Re-render as markdown so **bold**, - lists, code blocks, etc. display properly
-        if (!final_text.isEmpty()) {
-            streaming_bubble_->document()->setDefaultStyleSheet(markdown_css(col::TEXT_PRIMARY()));
-            streaming_bubble_->setMarkdown(final_text);
-        }
-        streaming_bubble_->setReadOnly(true);
-
-        // Show the copy button now that streaming is done
-        auto* copy_obj = streaming_bubble_->property("copy_btn").value<QObject*>();
-        if (auto* copy_btn = qobject_cast<QPushButton*>(copy_obj))
-            copy_btn->show();
-
+        // Use accumulated streamed text if present, else fall back to the
+        // response body (non-streaming path). finalize_streaming swaps the
+        // label to MarkdownText and reveals the copy button.
+        const QString acc = streaming_bubble_->property("acc").toString();
+        const QString final_text = acc.isEmpty() ? content : acc;
+        fincept::ai_chat::ChatBubbleFactory::finalize_streaming(streaming_bubble_, final_text);
         streaming_bubble_ = nullptr;
     }
     if (!content.isEmpty()) {
@@ -1008,193 +1053,26 @@ void AiChatScreen::on_provider_changed() {
 // ── Message bubbles ───────────────────────────────────────────────────────────
 
 void AiChatScreen::add_message_bubble(const QString& role, const QString& content, const QString& timestamp) {
-    const bool is_user = (role == "user");
-    const bool is_system = (role == "system");
-
-    const QString ts = [&]() -> QString {
-        QDateTime dt = QDateTime::fromString(timestamp, Qt::ISODate);
-        if (!dt.isValid())
-            dt = QDateTime::fromString(timestamp, "yyyy-MM-dd HH:mm:ss");
-        if (!dt.isValid() && !timestamp.isEmpty())
-            return timestamp;
-        return (dt.isValid() ? dt : QDateTime::currentDateTime()).toString("HH:mm");
-    }();
-
-    auto* row = new QWidget;
-    row->setStyleSheet("background:transparent;");
-    auto* rl = new QHBoxLayout(row);
-    rl->setContentsMargins(0, 0, 0, 0);
-    rl->setSpacing(0);
-
-    if (is_user)
-        rl->addStretch();
-
-    auto* col_widget = new QWidget;
-    col_widget->setStyleSheet("background:transparent;");
-    col_widget->setMaximumWidth(is_user ? 560 : 680);
-    auto* cvl = new QVBoxLayout(col_widget);
-    cvl->setContentsMargins(0, 0, 0, 0);
-    cvl->setSpacing(4);
-
-    // Role label
-    auto* role_lbl = new QLabel(is_user ? "You" : (is_system ? "System" : "AI"));
-    role_lbl->setAlignment(is_user ? Qt::AlignRight : Qt::AlignLeft);
-    role_lbl->setStyleSheet(QString("color:%1;font-size:%2px;font-weight:600;background:transparent;")
-                                .arg(is_user ? col::AMBER() : (is_system ? col::NEGATIVE() : col::AMBER()))
-                                .arg(fnt::TINY));
-    cvl->addWidget(role_lbl);
-
-    // Bubble
-    auto* bubble = new QFrame;
-    bubble->setStyleSheet(bubble_style(role));
-    auto* bvl = new QVBoxLayout(bubble);
-    bvl->setContentsMargins(0, 0, 0, 0);
-
-    auto* body = new QTextEdit;
-    body->setReadOnly(true);
-    body->setFrameShape(QFrame::NoFrame);
-    body->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-    body->document()->setDocumentMargin(4);
-    body->document()->setDefaultStyleSheet(markdown_css(body_color(role)));
-    apply_obsidian_palette(body);
-    body->setMarkdown(content);
-    body->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    body->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    body->setStyleSheet(QString("QTextEdit{background:transparent;color:%1;border:none;font-size:%2px;}")
-                            .arg(body_color(role))
-                            .arg(fnt::BODY));
-    // Size to content
-    body->document()->setTextWidth(is_user ? 520 : 640);
-    const int doc_h = static_cast<int>(body->document()->size().height());
-    body->setFixedHeight(qMax(doc_h + 16, 32));
-    bvl->addWidget(body);
-    cvl->addWidget(bubble);
-
-    // Footer row: timestamp + copy button
-    auto* footer = new QWidget;
-    footer->setStyleSheet("background:transparent;");
-    auto* fhl = new QHBoxLayout(footer);
-    fhl->setContentsMargins(0, 0, 0, 0);
-    fhl->setSpacing(6);
-
-    auto* time_lbl = new QLabel(ts);
-    time_lbl->setStyleSheet(
-        QString("color:%1;font-size:%2px;background:transparent;").arg(col::TEXT_DIM()).arg(fnt::TINY));
-    fhl->addWidget(time_lbl);
-
-    if (!is_user && !is_system) {
-        fhl->addStretch();
-        auto* copy_btn = new QPushButton("Copy");
-        copy_btn->setFixedHeight(20);
-        copy_btn->setCursor(Qt::PointingHandCursor);
-        copy_btn->setStyleSheet(QString("QPushButton{background:transparent;color:%1;border:1px solid %2;"
-                                        "border-radius:0px;padding:0 8px;font-size:%3px;}"
-                                        "QPushButton:hover{background:%2;color:%4;}")
-                                    .arg(col::TEXT_DIM(), col::BORDER_MED())
-                                    .arg(fnt::TINY)
-                                    .arg(col::TEXT_PRIMARY()));
-        QString plain = content;
-        connect(copy_btn, &QPushButton::clicked, this, [plain, copy_btn]() {
-            QApplication::clipboard()->setText(plain);
-            copy_btn->setText("Copied!");
-            QTimer::singleShot(1500, copy_btn, [copy_btn]() { copy_btn->setText("Copy"); });
-        });
-        fhl->addWidget(copy_btn);
-    }
-
-    if (is_user)
-        fhl->insertStretch(0);
-    cvl->addWidget(footer);
-
-    rl->addWidget(col_widget);
-    if (!is_user)
-        rl->addStretch();
-
-    messages_layout_->insertWidget(messages_layout_->count() - 1, row);
+    fincept::ai_chat::ChatBubbleFactory::Options opts;
+    opts.role               = role;
+    opts.content            = content;
+    opts.timestamp_iso      = timestamp;
+    opts.show_footer        = true;
+    opts.user_col_max_width = kUserColMaxWidth;
+    opts.ai_col_max_width   = kAiColMaxWidth;
+    auto b = fincept::ai_chat::ChatBubbleFactory::build(opts);
+    messages_layout_->insertWidget(messages_layout_->count() - 1, b.row);
 }
 
-QTextEdit* AiChatScreen::add_streaming_bubble() {
-    auto* row = new QWidget;
-    row->setStyleSheet("background:transparent;");
-    auto* rl = new QHBoxLayout(row);
-    rl->setContentsMargins(0, 0, 0, 0);
-
-    auto* col_widget = new QWidget;
-    col_widget->setStyleSheet("background:transparent;");
-    col_widget->setMaximumWidth(680);
-    auto* cvl = new QVBoxLayout(col_widget);
-    cvl->setContentsMargins(0, 0, 0, 0);
-    cvl->setSpacing(4);
-
-    auto* role_lbl = new QLabel("AI");
-    role_lbl->setAlignment(Qt::AlignLeft);
-    role_lbl->setStyleSheet(
-        QString("color:%1;font-size:%2px;font-weight:600;background:transparent;").arg(col::AMBER()).arg(fnt::TINY));
-    cvl->addWidget(role_lbl);
-
-    auto* bubble = new QFrame;
-    bubble->setStyleSheet(bubble_style("assistant"));
-    auto* bvl = new QVBoxLayout(bubble);
-    bvl->setContentsMargins(0, 0, 0, 0);
-
-    auto* body = new QTextEdit;
-    body->setReadOnly(false);
-    body->setFrameShape(QFrame::NoFrame);
-    body->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-    body->document()->setDocumentMargin(4);
-    body->document()->setDefaultStyleSheet(markdown_css(col::TEXT_PRIMARY()));
-    apply_obsidian_palette(body);
-    body->setMinimumHeight(32);
-    body->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    body->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    body->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-    body->setStyleSheet(QString("QTextEdit{background:transparent;color:%1;border:none;font-size:%2px;}")
-                            .arg(col::TEXT_PRIMARY())
-                            .arg(fnt::BODY));
-    // Grow height to fit content as chunks stream in
-    connect(body->document(), &QTextDocument::contentsChanged, body, [body, bubble, row]() {
-        body->document()->setTextWidth(body->viewport()->width() > 0 ? body->viewport()->width() : 640);
-        const int doc_h = static_cast<int>(body->document()->size().height());
-        const int new_h = qMax(doc_h + 16, 32);
-        body->setFixedHeight(new_h);
-        bubble->adjustSize();
-        row->adjustSize();
-    });
-    bvl->addWidget(body);
-    cvl->addWidget(bubble);
-
-    // Copy button — hidden during streaming, shown when done
-    auto* copy_btn = new QPushButton("Copy");
-    copy_btn->setFixedHeight(20);
-    copy_btn->setCursor(Qt::PointingHandCursor);
-    copy_btn->setStyleSheet(QString("QPushButton{background:transparent;color:%1;border:1px solid %2;"
-                                    "border-radius:0px;padding:0 8px;font-size:%3px;}"
-                                    "QPushButton:hover{background:%2;color:%4;}")
-                                .arg(col::TEXT_DIM(), col::BORDER_MED())
-                                .arg(fnt::TINY)
-                                .arg(col::TEXT_PRIMARY()));
-    copy_btn->hide();
-    connect(copy_btn, &QPushButton::clicked, this, [body, copy_btn]() {
-        QApplication::clipboard()->setText(body->toPlainText());
-        copy_btn->setText("Copied!");
-        QTimer::singleShot(1500, copy_btn, [copy_btn]() { copy_btn->setText("Copy"); });
-    });
-    auto* footer = new QWidget;
-    footer->setStyleSheet("background:transparent;");
-    auto* fhl = new QHBoxLayout(footer);
-    fhl->setContentsMargins(0, 0, 0, 0);
-    fhl->addStretch();
-    fhl->addWidget(copy_btn);
-    cvl->addWidget(footer);
-
-    // Store copy_btn so on_streaming_done can show it
-    body->setProperty("copy_btn", QVariant::fromValue(static_cast<QObject*>(copy_btn)));
-
-    rl->addWidget(col_widget);
-    rl->addStretch();
-
-    messages_layout_->insertWidget(messages_layout_->count() - 1, row);
-    return body;
+QLabel* AiChatScreen::add_streaming_bubble() {
+    fincept::ai_chat::ChatBubbleFactory::Options opts;
+    opts.role               = "assistant";
+    opts.show_footer        = true;
+    opts.user_col_max_width = kUserColMaxWidth;
+    opts.ai_col_max_width   = kAiColMaxWidth;
+    auto b = fincept::ai_chat::ChatBubbleFactory::build_streaming(opts);
+    messages_layout_->insertWidget(messages_layout_->count() - 1, b.row);
+    return b.body;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1310,6 +1188,7 @@ QVariantMap AiChatScreen::save_state() const {
         s.insert("scroll", scroll_area_->verticalScrollBar()->value());
     if (!attached_file_path_.isEmpty())
         s.insert("attached_file", attached_file_path_);
+    s.insert("sidebar_collapsed", sidebar_collapsed_);
 
     return s;
 }
@@ -1349,6 +1228,11 @@ void AiChatScreen::restore_state(const QVariantMap& state) {
             attach_badge_->setVisible(true);
         }
     }
+
+    // Sidebar collapsed state — apply without animation on restore so the
+    // user lands on the previously chosen layout immediately.
+    if (state.contains("sidebar_collapsed"))
+        apply_sidebar_collapsed(state.value("sidebar_collapsed").toBool(), /*animate=*/false);
 
     // Scroll position — defer until after message_layout has laid out,
     // otherwise the scrollbar max is still 0.

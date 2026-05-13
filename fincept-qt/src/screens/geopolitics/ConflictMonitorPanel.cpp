@@ -34,13 +34,29 @@ void ConflictMonitorPanel::build_ui() {
 
     // ── World Map ───────────────────────────────────────────────────────────
     map_widget_ = new fincept::ui::WorldMapWidget(left_splitter);
-    map_widget_->setMinimumHeight(160);
+    map_widget_->setMinimumHeight(280);
     left_splitter->addWidget(map_widget_);
+
+    // Map pin click → select the matching row in the events table. The row's
+    // currentCellChanged handler (wired below) then fills the detail panel,
+    // so the side panel and the table stay in sync from a single source.
+    connect(map_widget_, &fincept::ui::WorldMapWidget::pin_clicked, this, [this](int event_id) {
+        if (!events_table_)
+            return;
+        for (int r = 0; r < events_table_->rowCount(); ++r) {
+            auto* it = events_table_->item(r, 0);
+            if (it && it->data(Qt::UserRole + 1).toInt() == event_id) {
+                events_table_->setCurrentCell(r, 0);
+                events_table_->scrollToItem(it, QAbstractItemView::PositionAtCenter);
+                break;
+            }
+        }
+    });
 
     // ── Events Table ────────────────────────────────────────────────────────
     events_table_ = new QTableWidget(left_splitter);
     events_table_->setColumnCount(7);
-    events_table_->setHorizontalHeaderLabels({"Category", "Country", "City", "Keywords", "Date", "Lat", "Lng"});
+    events_table_->setHorizontalHeaderLabels({"Category", "Country", "City", "Title", "Date", "Lat", "Lng"});
     events_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     events_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     events_table_->setAlternatingRowColors(true);
@@ -82,13 +98,21 @@ void ConflictMonitorPanel::build_ui() {
             return events_table_->item(row, col) ? events_table_->item(row, col)->text() : QString();
         };
 
+        // Raw category id lives on UserRole of column 0 — needed for the
+        // colour swatch (category_color expects "armed_conflict", not the
+        // pretty-printed "Armed Conflict").
+        auto* cat_cell = events_table_->item(row, 0);
+        const QString raw_cat = cat_cell ? cat_cell->data(Qt::UserRole).toString() : QString();
+
         detail_category_->setText(get_text(0).toUpper());
         detail_country_->setText(get_text(1));
         detail_city_->setText(get_text(2));
         detail_keywords_->setText(get_text(3));
         detail_date_->setText(get_text(4));
+        if (auto* it = events_table_->item(row, 3); it && detail_source_)
+            detail_source_->setText(it->data(Qt::UserRole).toString());
 
-        auto cat_color = category_color(get_text(0));
+        const auto cat_color = category_color(raw_cat);
         detail_category_->setStyleSheet(QString("color:%1; font-size:%2px; font-weight:700; font-family:%3;")
                                             .arg(cat_color.name())
                                             .arg(ui::fonts::SMALL)
@@ -98,8 +122,13 @@ void ConflictMonitorPanel::build_ui() {
     });
     left_splitter->addWidget(events_table_);
 
-    left_splitter->setStretchFactor(0, 4);
-    left_splitter->setStretchFactor(1, 6);
+    events_table_->setMinimumHeight(180);
+    left_splitter->setStretchFactor(0, 5);
+    left_splitter->setStretchFactor(1, 5);
+    // Initial split — keeps the map at a useful height even before the user
+    // drags the handle. Without this, an empty/short table can let the map
+    // collapse into a thin strip that paints garbage tile coverage.
+    left_splitter->setSizes({360, 360});
     root->addWidget(left_splitter, 1);
 
     // Right sidebar: stats + selected detail
@@ -182,7 +211,7 @@ void ConflictMonitorPanel::build_ui() {
     };
     FieldDef fields[] = {
         {"CATEGORY", &detail_category_}, {"COUNTRY", &detail_country_}, {"CITY", &detail_city_},
-        {"KEYWORDS", &detail_keywords_}, {"DATE", &detail_date_},       {"SOURCE", &detail_source_},
+        {"TITLE", &detail_keywords_},    {"DATE", &detail_date_},       {"SOURCE", &detail_source_},
     };
 
     for (int r = 0; r < 6; ++r) {
@@ -211,20 +240,29 @@ void ConflictMonitorPanel::set_events(const QVector<NewsEvent>& events) {
     for (int i = 0; i < events.size(); ++i) {
         const auto& ev = events[i];
 
-        auto* cat_item = new QTableWidgetItem(ev.event_category);
+        auto* cat_item = new QTableWidgetItem(pretty_category(ev.event_category));
         cat_item->setForeground(category_color(ev.event_category));
+        // UserRole carries the raw category id (used by the detail panel
+        // to recover the colour); UserRole+1 carries the original event
+        // index so map-pin clicks can resolve back to the correct row even
+        // after the user re-sorts.
+        cat_item->setData(Qt::UserRole, ev.event_category);
+        cat_item->setData(Qt::UserRole + 1, i);
         events_table_->setItem(i, 0, cat_item);
 
         events_table_->setItem(i, 1, new QTableWidgetItem(ev.country));
         events_table_->setItem(i, 2, new QTableWidgetItem(ev.city));
-        events_table_->setItem(i, 3, new QTableWidgetItem(ev.matched_keywords));
+        auto* title_item = new QTableWidgetItem(ev.title);
+        title_item->setData(Qt::UserRole, ev.source);
+        title_item->setToolTip(ev.title);
+        events_table_->setItem(i, 3, title_item);
         events_table_->setItem(i, 4, new QTableWidgetItem(ev.extracted_date));
 
-        auto* lat_item = new QTableWidgetItem(QString::number(ev.latitude, 'f', 4));
+        auto* lat_item = new QTableWidgetItem(ev.has_coords ? QString::number(ev.latitude, 'f', 4) : QString());
         lat_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         events_table_->setItem(i, 5, lat_item);
 
-        auto* lng_item = new QTableWidgetItem(QString::number(ev.longitude, 'f', 4));
+        auto* lng_item = new QTableWidgetItem(ev.has_coords ? QString::number(ev.longitude, 'f', 4) : QString());
         lng_item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         events_table_->setItem(i, 6, lng_item);
     }
@@ -239,11 +277,11 @@ void ConflictMonitorPanel::update_map(const QVector<NewsEvent>& events) {
     pins.reserve(events.size());
 
     QHash<QString, int> coord_counts;
-    auto* rng = QRandomGenerator::global();
 
     int skipped = 0;
-    for (const auto& ev : events) {
-        if (ev.latitude == 0.0 && ev.longitude == 0.0) {
+    for (int i = 0; i < events.size(); ++i) {
+        const auto& ev = events[i];
+        if (!ev.has_coords) {
             ++skipped;
             continue;
         }
@@ -261,8 +299,11 @@ void ConflictMonitorPanel::update_map(const QVector<NewsEvent>& events) {
             lng += dist * std::sin(angle);
         }
 
-        pins.append({lat, lng, QString("%1 — %2, %3").arg(ev.event_category, ev.city, ev.country),
-                     category_color(ev.event_category), 5.0});
+        // pin.id = event index — lets the click handler scroll/select the
+        // matching row in the table (UserRole+1 stamp on column 0).
+        pins.append({lat, lng,
+                     QString("%1 — %2, %3").arg(ev.event_category, ev.city, ev.country),
+                     category_color(ev.event_category), 5.0, i});
     }
 
     LOG_INFO("Geopolitics", QString("Map: %1 events → %2 pins (%3 skipped, %4 unique coords)")
@@ -307,7 +348,7 @@ void ConflictMonitorPanel::update_stats(const QVector<NewsEvent>& events) {
         rl->setContentsMargins(6, 2, 4, 2);
         rl->setSpacing(6);
 
-        auto* name = new QLabel(cat, row);
+        auto* name = new QLabel(pretty_category(cat), row);
         name->setStyleSheet(QString("color:%1; font-size:%2px; font-family:%3; border:none; background:transparent;")
                                 .arg(ui::colors::TEXT_SECONDARY())
                                 .arg(ui::fonts::SMALL)
