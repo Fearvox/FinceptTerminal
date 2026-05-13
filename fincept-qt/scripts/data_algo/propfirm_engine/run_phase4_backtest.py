@@ -19,6 +19,7 @@ Usage:
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -44,7 +45,8 @@ LEAKAGE_THRESHOLD_R = 0.5   # spec §4.3 pass gate threshold
 SAMPLE_WINDOW = 30          # spec §4.3 "last 30 trades"
 
 
-def _run_one(symbol: str, interval: str, nbars: int, asset_class: str):
+def _run_one(symbol: str, interval: str, nbars: int, asset_class: str,
+             scale_out: bool = False):
     bars = fetch_any(symbol, interval, nbars)
     if len(bars) < 200:
         return {"error": f"insufficient bars ({len(bars)})"}
@@ -53,6 +55,7 @@ def _run_one(symbol: str, interval: str, nbars: int, asset_class: str):
         session_filter_on=True,
         confluence_gate_on=True,
         mfe_log_on=True,
+        scale_out_at_1R=scale_out,
         asset_class=asset_class,
     )
     res = PropfirmEngine(cfg).run(bars, symbol)
@@ -122,12 +125,24 @@ def _aggregate(results: list[dict]) -> dict:
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--scale-out",
+        action="store_true",
+        help="Enable P4.1 scale-out at +1R + remainder_tp on the second half.",
+    )
+    args = parser.parse_args()
+
+    phase_label = "p4.1" if args.scale_out else "p4"
+    raw_filename = f"phase_4{'_1' if args.scale_out else ''}_raw.json"
+
     t0 = time.time()
-    out = {"scenarios": [], "started_at": t0, "phase": "p4"}
+    out = {"scenarios": [], "started_at": t0, "phase": phase_label,
+           "scale_out": args.scale_out}
     for sym, itv, n, cls in SCENARIOS:
         label = f"{sym} {itv}"
         try:
-            r = _run_one(sym, itv, n, cls)
+            r = _run_one(sym, itv, n, cls, scale_out=args.scale_out)
             out["scenarios"].append(r)
             if "error" in r:
                 print(f"  {label:<20} ERR {r['error']}", flush=True)
@@ -169,7 +184,7 @@ def main():
     print("=" * 70)
 
     os.makedirs(os.path.join(os.path.dirname(__file__), "reports"), exist_ok=True)
-    out_path = os.path.join(os.path.dirname(__file__), "reports", "phase_4_raw.json")
+    out_path = os.path.join(os.path.dirname(__file__), "reports", raw_filename)
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2, default=str)
     print(f"\n  raw results → {out_path}", flush=True)
