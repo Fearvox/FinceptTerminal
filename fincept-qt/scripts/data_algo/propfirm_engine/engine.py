@@ -235,48 +235,74 @@ class PropfirmEngine:
                     half_closed = True
 
             if pos != 0:
+                # When scale-out has fired, the remainder rides to a wider
+                # TP (cfg.remainder_tp) per P4.1 design. SL stays at cfg.sl
+                # (no breakeven move, rail §4.1). When scale-out hasn't
+                # fired, behavior is identical to P3 (cfg.tp).
+                tp_for_remainder = cfg.remainder_tp if half_closed else cfg.tp
+
                 if pos == 1:
                     if bar["low"] <= entry * (1 - cfg.sl):
                         exit_px = entry * (1 - cfg.sl)
+                        raw_pnl = -cfg.sl * 100
+                        final_pnl = compose_scale_out_pnl(
+                            half_closed, half_pnl, raw_pnl, cfg.scale_out_fraction
+                        )
                         result.trades.append({
                             "side": "L", "regime": active, "entry": entry,
                             "exit": exit_px,
-                            "pnl_pct": -cfg.sl * 100, "reason": "SL",
+                            "pnl_pct": final_pnl, "reason": "SL",
                             "ts": bar.get("ts"),
                         })
-                        _log_exit(i, exit_px, side=1, pnl_pct=-cfg.sl * 100)
+                        _log_exit(i, exit_px, side=1, pnl_pct=final_pnl)
                         pos = 0; active = None
-                    elif bar["high"] >= entry * (1 + cfg.tp):
-                        exit_px = entry * (1 + cfg.tp)
+                        half_closed = False; half_pnl = 0.0
+                    elif bar["high"] >= entry * (1 + tp_for_remainder):
+                        exit_px = entry * (1 + tp_for_remainder)
+                        raw_pnl = tp_for_remainder * 100
+                        final_pnl = compose_scale_out_pnl(
+                            half_closed, half_pnl, raw_pnl, cfg.scale_out_fraction
+                        )
                         result.trades.append({
                             "side": "L", "regime": active, "entry": entry,
                             "exit": exit_px,
-                            "pnl_pct": cfg.tp * 100, "reason": "TP",
+                            "pnl_pct": final_pnl, "reason": "TP",
                             "ts": bar.get("ts"),
                         })
-                        _log_exit(i, exit_px, side=1, pnl_pct=cfg.tp * 100)
+                        _log_exit(i, exit_px, side=1, pnl_pct=final_pnl)
                         pos = 0; active = None
+                        half_closed = False; half_pnl = 0.0
                 elif pos == -1:
                     if bar["high"] >= entry * (1 + cfg.sl):
                         exit_px = entry * (1 + cfg.sl)
+                        raw_pnl = -cfg.sl * 100
+                        final_pnl = compose_scale_out_pnl(
+                            half_closed, half_pnl, raw_pnl, cfg.scale_out_fraction
+                        )
                         result.trades.append({
                             "side": "S", "regime": active, "entry": entry,
                             "exit": exit_px,
-                            "pnl_pct": -cfg.sl * 100, "reason": "SL",
+                            "pnl_pct": final_pnl, "reason": "SL",
                             "ts": bar.get("ts"),
                         })
-                        _log_exit(i, exit_px, side=-1, pnl_pct=-cfg.sl * 100)
+                        _log_exit(i, exit_px, side=-1, pnl_pct=final_pnl)
                         pos = 0; active = None
-                    elif bar["low"] <= entry * (1 - cfg.tp):
-                        exit_px = entry * (1 - cfg.tp)
+                        half_closed = False; half_pnl = 0.0
+                    elif bar["low"] <= entry * (1 - tp_for_remainder):
+                        exit_px = entry * (1 - tp_for_remainder)
+                        raw_pnl = tp_for_remainder * 100
+                        final_pnl = compose_scale_out_pnl(
+                            half_closed, half_pnl, raw_pnl, cfg.scale_out_fraction
+                        )
                         result.trades.append({
                             "side": "S", "regime": active, "entry": entry,
                             "exit": exit_px,
-                            "pnl_pct": cfg.tp * 100, "reason": "TP",
+                            "pnl_pct": final_pnl, "reason": "TP",
                             "ts": bar.get("ts"),
                         })
-                        _log_exit(i, exit_px, side=-1, pnl_pct=cfg.tp * 100)
+                        _log_exit(i, exit_px, side=-1, pnl_pct=final_pnl)
                         pos = 0; active = None
+                        half_closed = False; half_pnl = 0.0
                 continue  # while in-position, do not consider new entries
 
             # --- Entry logic ---

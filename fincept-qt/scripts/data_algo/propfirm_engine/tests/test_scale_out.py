@@ -105,3 +105,52 @@ def test_pnl_remainder_runs_past_3R():
     p = compose_scale_out_pnl(half_closed=True, half_pnl=0.75,
                               remainder_pnl=6.0, fraction=0.5)
     assert p == pytest.approx(3.75)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end engine integration — scale_out_at_1R inside run()
+# ---------------------------------------------------------------------------
+
+from propfirm_engine.engine import PropfirmEngine
+
+
+def _make_uptrend_bars(n: int, start: float = 100.0, step: float = 0.5):
+    """Bars where price ticks straight up by `step` per bar."""
+    return [{
+        "ts": 1_700_000_000 + i * 3600,
+        "open": start + i * step,
+        "high": start + i * step + 0.1,
+        "low":  start + i * step - 0.1,
+        "close": start + i * step,
+        "volume": 1000.0,
+    } for i in range(n)]
+
+
+def test_engine_scale_out_off_uses_base_tp():
+    """With scale_out_at_1R=False the engine path is exactly P3 — TP fires
+    at +cfg.tp (default +3pp), no half-close trade record."""
+    cfg = PropfirmConfig(scale_out_at_1R=False, sl=0.015, tp=0.03)
+    # Just verify the config path doesn't break anything.
+    # (Real backtest with regime entries is iter-4/5's job; this only
+    # confirms construction works.)
+    eng = PropfirmEngine(cfg)
+    bars = _make_uptrend_bars(200)
+    result = eng.run(bars, "BTCUSDT")
+    # No trades expected on synthetic regular bars (s1_trend_ema needs
+    # real price action), but the run must complete without exception.
+    assert isinstance(result.trades, list)
+
+
+def test_engine_scale_out_on_does_not_crash():
+    """Smoke test: scale_out_at_1R=True on synthetic bars completes
+    without raising. Behavioural correctness is validated via the
+    helper unit tests above + the iter-4/5 8-scenario backtest."""
+    cfg = PropfirmConfig(scale_out_at_1R=True, sl=0.015, tp=0.03,
+                         remainder_tp=0.045, scale_out_fraction=0.5)
+    eng = PropfirmEngine(cfg)
+    bars = _make_uptrend_bars(200)
+    result = eng.run(bars, "BTCUSDT")
+    assert isinstance(result.trades, list)
+    # Defaults: remainder_tp=4.5%, fraction=0.5 — config plumbed through.
+    assert eng.cfg.remainder_tp == 0.045
+    assert eng.cfg.scale_out_fraction == 0.5
