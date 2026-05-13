@@ -1,22 +1,28 @@
 """
-Propfirm v4 — P3 confluence scorer (scaffold).
+Propfirm v4 — P3.1 confluence scorer (level breakout redesign).
 
 Per spec §4.3 Phase Breakdown, P3 requires entries to satisfy a 3-of-3
-confluence gate:
+confluence gate. **P3 attempt 1** (commit f6113cfc, 2026-05-13) used a
+"close NEAR a level" definition for signal #2 and failed the gate —
+5/8 scenarios produced zero trades because `s1_trend_ema` fires on bars
+PUSHING THROUGH levels, not lingering near them. The two signals were
+structurally anti-correlated.
+
+P3.1 (this revision, attempt 2 of 2) redefines signal #2 as a
+direction-aware **breakout**:
 
   1. HTF trend bias — HTF EMA agrees with intended direction
-  2. Key level proximity — within 0.5 × ATR of VWAP or previous-day H/L
+  2. Level breakout — close has broken BEYOND prev-session H/L or VWAP
+     by ≥ 0.25 × ATR in the intended direction
   3. CVD/volume-delta slope — aligned with intended direction
+
+This aligns the level signal with the entry generator's geometry: when
+`s1_trend_ema` is firing long because price broke up, the level signal
+agrees.
 
 Risk C in the spec: CVD/volume-delta is noisy on Yahoo tick-volume data
 for FX. Mitigation: FX skips signal #3 and uses a 2-of-2 gate (HTF +
 level). This is encoded in `score_required()`.
-
-This module is the iter-1/5 SCAFFOLD — interfaces and stubs in place,
-real signal logic added in iter-2/5. Until then the helpers return the
-neutral / no-signal value so the gate is effectively closed (no entries
-fire). That keeps the scaffold safe to wire into engine.py without
-accidentally producing a noisier engine than P1.
 """
 from __future__ import annotations
 
@@ -28,10 +34,15 @@ Direction = Literal["long", "short", "none"]
 
 @dataclass
 class ConfluenceResult:
-    """Per-bar evaluation of the 3-of-3 (or 2-of-2 on FX) gate."""
+    """Per-bar evaluation of the 3-of-3 (or 2-of-2 on FX) gate.
+
+    `level_breakout` replaces the original `level_proximity` field (P3
+    attempt 1) — the field name is part of the semantic correction, not
+    just bookkeeping. See `level_breakout()` for the new rule.
+    """
     direction: Direction       # intended trade direction (or "none" if regime says skip)
     htf_bias_aligned: bool     # signal 1
-    level_proximity: bool      # signal 2
+    level_breakout: bool       # signal 2 (P3.1 redesign — direction-aware breakout)
     cvd_aligned: bool          # signal 3 (skipped on FX)
     required: int              # how many signals must align (2 for FX, 3 otherwise)
     score: int                 # number of aligned signals
@@ -96,24 +107,39 @@ def htf_trend_bias(
     return "none"
 
 
-def level_proximity(
+def level_breakout(
     bars: list[dict[str, Any]],
     i: int,
+    intended: Direction,
     atr_value: float,
-    threshold_atr_mult: float = 0.5,
+    threshold_atr_mult: float = 0.25,
     prev_session_bars: int = 24,
 ) -> bool:
-    """Within threshold_atr_mult × ATR of a rolling-VWAP or prev-session H/L.
+    """Direction-aware level BREAKOUT (P3.1 redesign).
 
-    "Prev session H/L" is approximated as the high/low over the `prev_session_bars`
-    bars ending at bar i-1 (i.e. excluding the current bar itself, so we're not
-    comparing a level to itself).
+    Replaces the original "close NEAR a level" semantic (P3 attempt 1) with
+    "close has BROKEN BEYOND the relevant level by ≥ threshold × ATR". The
+    earlier "near" version conflicted structurally with `s1_trend_ema` — that
+    strategy fires precisely on bars pushing THROUGH levels, so requiring
+    proximity to those same levels killed 5/8 scenarios. Aligning the level
+    signal with the entry direction fixes the categorical mismatch.
 
-    Rolling VWAP is computed cumulatively over those same `prev_session_bars` bars
-    using typical price (h+l+c)/3 × volume / volume. Bars without volume contribute
-    zero (VWAP collapses to last typical price if all volumes are zero — safe).
+    Rules (assuming `intended` is "long" / "short"; "none" always returns False):
+
+      long:  close[i]  >  prev_h + threshold_atr_mult * atr_value
+                 OR  close[i] > vwap   + threshold_atr_mult * atr_value
+      short: close[i]  <  prev_l - threshold_atr_mult * atr_value
+                 OR  close[i] < vwap   - threshold_atr_mult * atr_value
+
+    Either reference level (prev-session H/L or rolling VWAP) satisfying the
+    break-beyond test is sufficient. Default threshold is 0.25 × ATR (loose
+    enough to fire on real breakouts, tight enough to exclude noise).
+
+    Prev-session levels and VWAP are computed over the `prev_session_bars`
+    bars ending at i-1 (excludes the current bar so we never compare a level
+    to itself).
     """
-    if i < prev_session_bars or atr_value <= 0:
+    if intended == "none" or i < prev_session_bars or atr_value <= 0:
         return False
 
     window = bars[i - prev_session_bars:i]  # excludes bar i
@@ -139,10 +165,12 @@ def level_proximity(
 
     close_now = bars[i]["close"]
     thresh = threshold_atr_mult * atr_value
-    near_vwap = abs(close_now - vwap) <= thresh
-    near_high = abs(close_now - prev_h) <= thresh
-    near_low = abs(close_now - prev_l) <= thresh
-    return near_vwap or near_high or near_low
+
+    if intended == "long":
+        return (close_now > prev_h + thresh) or (close_now > vwap + thresh)
+    if intended == "short":
+        return (close_now < prev_l - thresh) or (close_now < vwap - thresh)
+    return False
 
 
 def cvd_slope_aligned(
@@ -199,7 +227,7 @@ def evaluate(
     htf = htf_trend_bias(bars, i)
     htf_aligned = (htf == intended) and (intended != "none")
 
-    level_ok = level_proximity(bars, i, atr_value)
+    level_ok = level_breakout(bars, i, intended, atr_value)
 
     if _is_fx(asset_class):
         cvd_ok = True  # signal 3 not used for FX; mark True so it doesn't drag the score
@@ -211,7 +239,7 @@ def evaluate(
     return ConfluenceResult(
         direction=intended,
         htf_bias_aligned=htf_aligned,
-        level_proximity=level_ok,
+        level_breakout=level_ok,
         cvd_aligned=cvd_ok,
         required=required,
         score=score,
