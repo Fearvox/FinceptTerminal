@@ -47,6 +47,7 @@ python3 _check_ecc_manifest.py
 | `pytest propfirm_engine/tests/` | 48 passed, 0 failed | Covers atr_utils, fusion_panel, leap_moe_room, session_filter |
 | `_check_build_env.sh` | **BLOCKED** (exit 1) | See "Known-blocked: C++" below — not a regression, a captured state |
 | `_check_ecc_manifest.py` | **DRIFT** (exit 1, 3/17 exist) | See "Known-drift: ECC manifest" below |
+| `_git_hooks/pre-commit` (installed) | active (`core.hooksPath` set) | Self-test passes; blocks UUID/sk-*/ghp_/etc. on commit. Bypass: `git commit --no-verify` |
 
 ## Known-blocked: C++ cmake configure on this branch
 
