@@ -54,7 +54,7 @@ python3 _smoke_scanners.py
 | `_check_build_env.sh` | **BLOCKED** (exit 1) | See "Known-blocked: C++" below — not a regression, a captured state |
 | `_check_ecc_manifest.py` | **DRIFT** (exit 1, 3/17 exist) | See "Known-drift: ECC manifest" below |
 | `_git_hooks/pre-commit` (installed) | active (`core.hooksPath` set) | Self-test passes; blocks UUID/sk-*/ghp_/etc. on commit. Bypass: `git commit --no-verify` |
-| `_smoke_scanners.py` | **1/1 OK** (wolf_hour) | Live API probe; iter-5/5 adds Polymarket + weather entries |
+| `_smoke_scanners.py` | **3/3 OK** (wolf_hour, polymarket, weather) | Live API probe — ~8s total wall time |
 
 ## Known-blocked: C++ cmake configure on this branch
 

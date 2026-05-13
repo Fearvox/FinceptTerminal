@@ -98,7 +98,39 @@ SCANNERS: list[ScannerSpec] = [
         precheck=_wolf_hour_precheck,
         env_inject={"MANIFOLD_API_KEY": _manifold_key_from_keychain()},
     ),
-    # iter-5/5 will register polymarket and weather scanners below
+    ScannerSpec(
+        name="polymarket",
+        # --category=fed is one of the smallest, fastest slices (~15 of 5000
+        # markets match the "fed" keyword set); good for liveness, not for
+        # actual edge discovery.
+        cmd=["python3", "polymarket_scanner.py", "scan", "--category", "fed",
+             "--limit", "5"],
+        timeout_seconds=60,
+        expect_exit=0,
+        env_dependent_ok=(
+            # Polymarket gamma-api is region-blocked in some jurisdictions.
+            # If a contributor is on US residential IP without VPN, we
+            # accept "blocked" as degraded-OK rather than fail.
+            "403 Forbidden",
+            "blocked in your region",
+            "geo-restricted",
+            "ConnectionError",
+        ),
+    ),
+    ScannerSpec(
+        name="weather",
+        # The default `scan` walks 7 stable-weather cities × ECMWF/GFS
+        # ensemble; no auth, just public Open-Meteo. Empty result (no
+        # high-confidence candidates) is acceptable on volatile weather
+        # weeks.
+        cmd=["python3", "weather_arb_scanner.py", "scan"],
+        timeout_seconds=120,
+        expect_exit=0,
+        env_dependent_ok=(
+            "Open-Meteo unreachable",
+            "rate limit",
+        ),
+    ),
 ]
 
 
