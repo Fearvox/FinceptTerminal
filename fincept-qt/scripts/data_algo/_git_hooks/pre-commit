@@ -101,12 +101,15 @@ else
   added_lines=""
   while IFS= read -r line; do
     if [[ "$line" =~ ^\+\+\+\ b/(.*) ]]; then
-      # Flush previous file
+      # Capture the new path BEFORE flushing, because scan_text runs
+      # [[ =~ ]] internally which clobbers BASH_REMATCH and would leave
+      # ${BASH_REMATCH[1]} unset (set -u → unbound-variable error).
+      new_path="${BASH_REMATCH[1]}"
       if [ -n "$current_path" ] && [ -n "$added_lines" ] && ! allowlist_path "$current_path"; then
         scan_text "$current_path" "$added_lines"
         total_hits=$((total_hits + $?))
       fi
-      current_path="${BASH_REMATCH[1]}"
+      current_path="$new_path"
       added_lines=""
     elif [[ "$line" =~ ^\+ ]] && ! [[ "$line" =~ ^\+\+\+ ]]; then
       added_lines+="${line:1}"$'\n'
