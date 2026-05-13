@@ -112,7 +112,12 @@ class PropfirmEngine:
         cfg = self.cfg
         if cfg.atr_mult_override is not None:
             return cfg.atr_mult_override
-        return _atr.multiplier_for(symbol, cfg.interval, default=cfg.atr_mult)
+        return _atr.multiplier_for(
+            symbol,
+            cfg.interval,
+            asset_class=cfg.asset_class,
+            default=cfg.atr_mult,
+        )
 
     def run(self, bars: list[dict[str, Any]], symbol: str) -> PropfirmResult:
         cfg = self.cfg

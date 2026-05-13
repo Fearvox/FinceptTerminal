@@ -40,6 +40,38 @@ def test_multiplier_btc_15m_widened():
     assert au.multiplier_for("ETHUSDT", "15m") == 1.5
 
 
+# ── Per-asset-class table (P2 mult experiment, 2026-05-13) ──────────────
+
+@pytest.mark.parametrize(
+    "asset_class,expected",
+    [
+        ("fx",     2.5),
+        ("gold",   2.0),
+        ("oil",    1.5),
+        ("equity", 1.5),
+        ("crypto", 1.5),
+    ],
+)
+def test_multiplier_per_asset_class(asset_class, expected):
+    assert au.multiplier_for("EURUSD=X", "1h", asset_class=asset_class) == expected
+
+
+def test_multiplier_btc_15m_beats_asset_table():
+    """BTC 15m exception (Risk B) wins even if asset_class=crypto would route to 1.5."""
+    assert au.multiplier_for("BTCUSDT", "15m", asset_class="crypto") == 2.0
+
+
+def test_multiplier_unknown_asset_class_falls_back_to_default():
+    assert au.multiplier_for("XYZ", "1h", asset_class="exotic", default=1.5) == 1.5
+    assert au.multiplier_for("XYZ", "1h", asset_class="exotic", default=2.7) == 2.7
+
+
+def test_multiplier_no_asset_class_keeps_legacy_behavior():
+    """Callers that don't pass asset_class still get the spec default."""
+    assert au.multiplier_for("EURUSD=X", "1h") == 1.5
+    assert au.multiplier_for("GC=F", "1h") == 1.5
+
+
 def test_multiplier_custom_defaults():
     assert au.multiplier_for("BTCUSDT", "1h", default=1.8) == 1.8
     assert au.multiplier_for("BTCUSDT", "15m", btc_15m=2.5) == 2.5

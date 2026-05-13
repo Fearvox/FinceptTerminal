@@ -33,14 +33,46 @@ def atr(bars: list[Bar], period: int = 14) -> list[float]:
 
 
 def multiplier_for(symbol: str, interval: str | None = None,
+                   asset_class: str | None = None,
                    default: float = 1.5, btc_15m: float = 2.0) -> float:
-    """Return the ATR multiplier for the given (symbol, interval).
+    """Return the ATR multiplier for the given (symbol, interval, asset_class).
 
-    Spec §4.3 default is 1.5×. Risk B widens BTC 15m to 2.0× because
-    low-ATR crypto ranges at 15m granularity trip 1.5× trails too often.
+    Two layers of override over the spec's 1.5× default:
+
+    1. Per-instrument exception (Risk B, original spec): BTC 15m widens
+       to 2.0× because low-ATR crypto ranges at 15m granularity trip
+       1.5× trails too often. Takes precedence over the asset-class
+       table below.
+
+    2. Per-asset-class table (P2 mult experiment, 2026-05-13). Phase 2
+       attempts 1+2 both failed pass gate because range regimes (FX,
+       gold) have normal intrabar swing ≈ 1.5× ATR — the trail fires
+       inside noise even with regime-conditional logic. This table
+       widens the multiplier on those asset classes ONCE, no online
+       sweep:
+
+         fx     → 2.5×
+         gold   → 2.0×
+         oil    → 1.5×
+         equity → 1.5×
+         crypto → 1.5× (1h), already 2.0× for BTC 15m above
+
+       Governance: this table is fixed. Any future change must be a
+       separate experiment with its own report; values are not free
+       parameters tunable per-run. Callers that don't pass
+       `asset_class` still get the spec default.
     """
     if interval == "15m" and symbol.upper().startswith("BTC"):
         return btc_15m
+    if asset_class:
+        per_asset = {
+            "fx": 2.5,
+            "gold": 2.0,
+            "oil": 1.5,
+            "equity": 1.5,
+            "crypto": 1.5,
+        }
+        return per_asset.get(asset_class, default)
     return default
 
 
