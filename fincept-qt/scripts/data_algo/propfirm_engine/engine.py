@@ -24,6 +24,8 @@ from .vendor import regime_v3_volume as _v3
 from .vendor.regime_dual_engine import adx, bb_width
 from .vendor.strategy_bake_off import s1_trend_ema, s6_mtf_combo
 from . import session_filter as _sf
+from . import atr_utils as _atr
+from . import confluence_scorer as _cs
 
 
 @dataclass
@@ -51,12 +53,14 @@ class PropfirmResult:
     trades: list[dict[str, Any]] = field(default_factory=list)
     regime_count: dict[str, int] = field(default_factory=dict)
     filtered_out: int = 0  # bars where session filter blocked an entry
+    filtered_confluence: int = 0  # bars where P3 confluence gate blocked entry
 
     def summary(self) -> dict[str, Any]:
         if not self.trades:
             return {"name": self.name, "symbol": self.symbol, "trades": 0,
                     "regime_count": self.regime_count,
-                    "filtered_out": self.filtered_out}
+                    "filtered_out": self.filtered_out,
+                    "filtered_confluence": self.filtered_confluence}
         pnls = [t["pnl_pct"] for t in self.trades]
         wins = sum(1 for p in pnls if p > 0)
         total = sum(pnls)
@@ -77,6 +81,7 @@ class PropfirmResult:
             "max_dd": max_dd,
             "regime_count": self.regime_count,
             "filtered_out": self.filtered_out,
+            "filtered_confluence": self.filtered_confluence,
         }
 
 
@@ -96,6 +101,9 @@ class PropfirmEngine:
         adx_s = adx(bars, 14)
         bbw_s = bb_width(closes, 20)
         vd_s = _v3.volume_delta(bars, 20)
+        # P3 confluence gate inputs (ATR + asset class). Computed once per run.
+        atr_s = _atr.atr(bars, 14) if cfg.confluence_gate_on else None
+        asset_class_for_cs = _sf.classify_symbol(symbol) if cfg.confluence_gate_on else None
 
         pos = 0
         entry = 0.0
@@ -203,6 +211,21 @@ class PropfirmEngine:
             # range_divergent / avoid / skip → no trade
 
             if target_pos != 0:
+                # --- P3 confluence gate (HTF + level + CVD) ---
+                if cfg.confluence_gate_on:
+                    intended = "long" if target_pos == 1 else "short"
+                    atr_value = (atr_s[i] if atr_s is not None and i < len(atr_s) else 0.0)
+                    conf = _cs.evaluate(
+                        bars=bars,
+                        i=i,
+                        intended=intended,
+                        atr_value=atr_value,
+                        asset_class=asset_class_for_cs or "crypto",
+                    )
+                    if not conf.passes:
+                        result.filtered_confluence += 1
+                        continue
+
                 pos = target_pos
                 entry = bar["close"]
                 active = regime

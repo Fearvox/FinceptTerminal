@@ -80,3 +80,75 @@ def test_evaluate_none_direction_keeps_htf_false():
     r = cs.evaluate(bars=[], i=0, intended="none", atr_value=1.0, asset_class="crypto")
     assert r.htf_bias_aligned is False
     assert r.passes is False
+
+
+# ---------------------------------------------------------------------------
+# Behavioral tests for the iter-2/5 helper implementations
+# ---------------------------------------------------------------------------
+
+def _bar(o, h, l, c, v=1000.0):
+    return {"open": o, "high": h, "low": l, "close": c, "volume": v}
+
+
+def test_htf_trend_bias_long_on_uptrend():
+    # Steadily rising closes: EMA[i] > EMA[i-5], close > EMA → 'long'
+    bars = [_bar(100 + j*0.1, 101 + j*0.1, 99 + j*0.1, 100.5 + j*0.1) for j in range(70)]
+    assert cs.htf_trend_bias(bars, i=69, htf_ema_period=50) == "long"
+
+
+def test_htf_trend_bias_short_on_downtrend():
+    bars = [_bar(100 - j*0.1, 101 - j*0.1, 99 - j*0.1, 100.5 - j*0.1) for j in range(70)]
+    assert cs.htf_trend_bias(bars, i=69, htf_ema_period=50) == "short"
+
+
+def test_htf_trend_bias_none_on_insufficient_history():
+    bars = [_bar(100, 101, 99, 100.5) for _ in range(30)]
+    assert cs.htf_trend_bias(bars, i=29, htf_ema_period=50) == "none"
+
+
+def test_level_proximity_true_when_close_at_prev_high():
+    bars = [_bar(100, 105, 99, 102) for _ in range(24)]
+    bars.append(_bar(102, 106, 101, 105))  # close pinned at the running high
+    assert cs.level_proximity(bars, i=24, atr_value=2.0, prev_session_bars=24) is True
+
+
+def test_level_proximity_false_when_far_from_levels():
+    # 24-bar window of stable ~100 prices, then current bar wanders to 130
+    bars = [_bar(100, 100.5, 99.5, 100) for _ in range(24)]
+    bars.append(_bar(130, 131, 129, 130))
+    # ATR=0.5, threshold = 0.25; gap of 30 is way outside any level
+    assert cs.level_proximity(bars, i=24, atr_value=0.5, prev_session_bars=24) is False
+
+
+def test_cvd_slope_aligned_long_on_buy_pressure():
+    # 21 up-bars (close > open with volume) → cumulative volume-delta strongly positive
+    bars = [_bar(100, 102, 99, 101, v=1000) for _ in range(21)]
+    assert cs.cvd_slope_aligned(bars, i=20, intended="long", lookback=20) is True
+
+
+def test_cvd_slope_aligned_returns_false_on_sell_pressure_for_long():
+    bars = [_bar(100, 101, 98, 99, v=1000) for _ in range(21)]
+    assert cs.cvd_slope_aligned(bars, i=20, intended="long", lookback=20) is False
+
+
+def test_cvd_slope_aligned_returns_false_on_zero_volume_data():
+    # FX-style data with volume=0 → CVD slope always 0 → returns False.
+    # Caller (evaluate) skips CVD for FX anyway, but the function itself must
+    # not throw or return spurious True.
+    bars = [_bar(100, 101, 99, 100.5, v=0) for _ in range(21)]
+    assert cs.cvd_slope_aligned(bars, i=20, intended="long", lookback=20) is False
+
+
+def test_evaluate_passes_on_aligned_uptrend_with_close_at_recent_high():
+    # Build a rising series, then the latest bar's close is at the running
+    # high — so HTF long + level proximity at prev-high + CVD aligned long.
+    bars = [_bar(100 + j*0.1, 101 + j*0.1, 99 + j*0.1, 100.5 + j*0.1) for j in range(70)]
+    # Bar 70 closes at the prior bar's high to trigger level_proximity
+    last_high = bars[-1]["high"]
+    bars.append(_bar(last_high - 0.1, last_high + 0.3, last_high - 0.5, last_high, v=2000))
+    r = cs.evaluate(bars=bars, i=70, intended="long", atr_value=1.0, asset_class="crypto")
+    assert r.htf_bias_aligned is True
+    assert r.level_proximity is True
+    assert r.cvd_aligned is True
+    assert r.score == 3
+    assert r.passes is True

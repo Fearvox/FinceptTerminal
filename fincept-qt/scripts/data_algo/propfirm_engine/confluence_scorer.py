@@ -58,16 +58,41 @@ def htf_trend_bias(
     bars: list[dict[str, Any]],
     i: int,
     htf_ema_period: int = 50,
+    slope_lookback: int = 5,
 ) -> Direction:
-    """SCAFFOLD: returns 'none' until iter-2 implements HTF EMA logic.
+    """HTF trend bias via EMA(htf_ema_period) on closes ending at bar i.
 
-    The iter-2 implementation should:
-    - Compute EMA over `htf_ema_period` closes ending at bar i
-    - Return 'long' if close[i] > EMA[i] AND EMA slope positive
-    - Return 'short' if close[i] < EMA[i] AND EMA slope negative
-    - Return 'none' otherwise
+    'long' iff close[i] > EMA[i] AND EMA[i] > EMA[i - slope_lookback]
+    'short' iff close[i] < EMA[i] AND EMA[i] < EMA[i - slope_lookback]
+    'none' on insufficient history or mixed signal.
+
+    We compute the EMA incrementally on the relevant tail to avoid O(N²)
+    pathology when called per-bar in the engine loop. The implementation
+    keeps a running EMA seeded with the SMA of the first `htf_ema_period`
+    closes before bar i.
     """
-    # iter-1 scaffold: no signal yet → gate cannot fire on this alone.
+    if i < htf_ema_period + slope_lookback:
+        return "none"
+
+    closes = [bars[k]["close"] for k in range(i - htf_ema_period - slope_lookback + 1, i + 1)]
+    alpha = 2.0 / (htf_ema_period + 1)
+    # Seed EMA with the SMA of the first `htf_ema_period` closes.
+    ema = sum(closes[:htf_ema_period]) / htf_ema_period
+    # Roll forward through the remaining `slope_lookback` bars + the
+    # current bar so we end at EMA[i] and have EMA[i - slope_lookback].
+    ema_prev = None
+    for j, c in enumerate(closes[htf_ema_period:], start=htf_ema_period):
+        if j == htf_ema_period + slope_lookback - 1:
+            ema_prev = ema
+        ema = alpha * c + (1 - alpha) * ema
+    if ema_prev is None:
+        return "none"
+
+    close_now = bars[i]["close"]
+    if close_now > ema and ema > ema_prev:
+        return "long"
+    if close_now < ema and ema < ema_prev:
+        return "short"
     return "none"
 
 
@@ -76,16 +101,48 @@ def level_proximity(
     i: int,
     atr_value: float,
     threshold_atr_mult: float = 0.5,
+    prev_session_bars: int = 24,
 ) -> bool:
-    """SCAFFOLD: returns False until iter-2 implements VWAP / prior-day H/L.
+    """Within threshold_atr_mult × ATR of a rolling-VWAP or prev-session H/L.
 
-    The iter-2 implementation should:
-    - Compute session VWAP up to bar i (cumulative typical-price × volume / volume)
-    - Compute previous trading day's H and L
-    - Return True if |close[i] - VWAP| <= threshold_atr_mult * ATR
-                 OR if close[i] is within threshold_atr_mult * ATR of yesterday's H or L
+    "Prev session H/L" is approximated as the high/low over the `prev_session_bars`
+    bars ending at bar i-1 (i.e. excluding the current bar itself, so we're not
+    comparing a level to itself).
+
+    Rolling VWAP is computed cumulatively over those same `prev_session_bars` bars
+    using typical price (h+l+c)/3 × volume / volume. Bars without volume contribute
+    zero (VWAP collapses to last typical price if all volumes are zero — safe).
     """
-    return False
+    if i < prev_session_bars or atr_value <= 0:
+        return False
+
+    window = bars[i - prev_session_bars:i]  # excludes bar i
+    if not window:
+        return False
+
+    highs = [b["high"] for b in window]
+    lows = [b["low"] for b in window]
+    prev_h = max(highs)
+    prev_l = min(lows)
+
+    # Rolling VWAP across the same window
+    num = 0.0
+    den = 0.0
+    for b in window:
+        v = b.get("volume", 0) or 0
+        if v <= 0:
+            continue
+        typ = (b["high"] + b["low"] + b["close"]) / 3
+        num += typ * v
+        den += v
+    vwap = (num / den) if den > 0 else window[-1]["close"]
+
+    close_now = bars[i]["close"]
+    thresh = threshold_atr_mult * atr_value
+    near_vwap = abs(close_now - vwap) <= thresh
+    near_high = abs(close_now - prev_h) <= thresh
+    near_low = abs(close_now - prev_l) <= thresh
+    return near_vwap or near_high or near_low
 
 
 def cvd_slope_aligned(
@@ -94,15 +151,34 @@ def cvd_slope_aligned(
     intended: Direction,
     lookback: int = 20,
 ) -> bool:
-    """SCAFFOLD: returns False until iter-2 implements CVD slope.
+    """Cumulative volume-delta slope aligned with intended direction.
 
-    The iter-2 implementation should:
-    - Build cumulative volume-delta (up_vol − down_vol) over bars[..i]
-    - Compute slope over the last `lookback` bars (simple linear regression or
-      first-difference average)
-    - Return True if slope > 0 and intended == 'long'
-               OR slope < 0 and intended == 'short'
+    Volume-delta per bar: +volume if close>open, -volume if close<open, else 0.
+    CVD = running sum. Slope proxy = CVD[i] - CVD[i - lookback]. If volume data
+    is missing/zero throughout (e.g. some Yahoo FX series), the slope is 0 and
+    we return False — which is correct: the FX path doesn't use this signal
+    anyway (the caller skips it via `_is_fx`).
     """
+    if intended == "none" or i < lookback:
+        return False
+
+    cvd_now = 0.0
+    cvd_then = 0.0
+    for k, b in enumerate(bars[: i + 1]):
+        v = b.get("volume", 0) or 0
+        if v <= 0:
+            continue
+        co = b["close"]
+        op = b["open"]
+        signed = v if co > op else (-v if co < op else 0)
+        cvd_now += signed
+        if k == i - lookback:
+            cvd_then = cvd_now
+    slope = cvd_now - cvd_then
+    if intended == "long":
+        return slope > 0
+    if intended == "short":
+        return slope < 0
     return False
 
 
