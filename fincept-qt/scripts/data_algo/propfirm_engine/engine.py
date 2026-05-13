@@ -29,6 +29,24 @@ from . import confluence_scorer as _cs
 from . import mfe_tracker as _mfe
 
 
+def compose_scale_out_pnl(half_closed: bool, half_pnl: float,
+                          remainder_pnl: float, fraction: float) -> float:
+    """Combine the locked-in half-close pnl with the remainder's exit pnl.
+
+    Used by the P4.1 scale-out exit path. If the scale-out trigger never
+    fired (half_closed is False), the trade exits as a single unit and
+    we just return remainder_pnl. Otherwise the final realized pnl is
+    `half_pnl + (1 − fraction) × remainder_pnl` — the locked-in fraction
+    is fully recognized regardless of how the remainder eventually exits.
+
+    All values are in percentage points. `fraction` is the share of the
+    original position that was closed at +1R (typically 0.5).
+    """
+    if not half_closed:
+        return remainder_pnl
+    return half_pnl + (1.0 - fraction) * remainder_pnl
+
+
 @dataclass
 class PropfirmConfig:
     # P1
@@ -42,6 +60,17 @@ class PropfirmConfig:
     # Risk params (shared across phases)
     sl: float = 0.015
     tp: float = 0.03
+
+    # P4.1 scale-out experiment: when scale_out_at_1R is True, the engine
+    # closes `scale_out_fraction` of the position at +1R (= +cfg.sl) and
+    # lets the remainder run to a wider TP (`remainder_tp`). SL stays at
+    # -cfg.sl on the remainder (NO breakeven move; spec §4.1 rail).
+    # Rationale: P4 measured mean +1.331R leakage with fixed TP=3pp. The
+    # wider remainder_tp captures the upside tail while the half-close
+    # locks in 0.5R guaranteed once a trade goes our way.
+    scale_out_at_1R: bool = False
+    scale_out_fraction: float = 0.5         # close half the position at +1R
+    remainder_tp: float = 0.045             # +3R = +4.5% on the remaining half
 
     # Asset class override (if None, auto-classify from symbol)
     asset_class: str | None = None
