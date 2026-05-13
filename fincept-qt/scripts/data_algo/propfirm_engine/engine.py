@@ -164,6 +164,9 @@ class PropfirmEngine:
         pos = 0
         entry = 0.0
         active = None  # regime label of the active position
+        # P4.1 scale-out state, per active position:
+        half_closed = False    # True after we close `scale_out_fraction` at +1R
+        half_pnl = 0.0         # locked-in pnl from the half-close, in pp
 
         for i in range(50, len(bars) - 1):
             bar = bars[i]
@@ -195,18 +198,41 @@ class PropfirmEngine:
                 elif active == "strong_short" and regime == "strong_long":
                     incompat = True
                 if incompat:
-                    pnl = ((bar["close"] / entry - 1) * 100 if pos == 1
-                           else (1 - bar["close"] / entry) * 100)
+                    raw_pnl = ((bar["close"] / entry - 1) * 100 if pos == 1
+                               else (1 - bar["close"] / entry) * 100)
+                    final_pnl = compose_scale_out_pnl(
+                        half_closed, half_pnl, raw_pnl, cfg.scale_out_fraction
+                    )
                     result.trades.append({
                         "side": "L" if pos == 1 else "S",
                         "regime": active,
                         "entry": entry, "exit": bar["close"],
-                        "pnl_pct": pnl, "reason": "regime_incompat",
+                        "pnl_pct": final_pnl, "reason": "regime_incompat",
                         "ts": bar.get("ts"),
                     })
-                    _log_exit(exit_idx=i, exit_price=bar["close"], side=pos, pnl_pct=pnl)
+                    _log_exit(exit_idx=i, exit_price=bar["close"], side=pos, pnl_pct=final_pnl)
                     pos = 0
                     active = None
+                    half_closed = False
+                    half_pnl = 0.0
+
+            # --- P4.1 scale-out trigger ---
+            # Check BEFORE SL/TP so the half-close can fire on the same bar
+            # that eventually hits SL/TP. If +1R hit and not yet scaled out,
+            # lock in `scale_out_fraction × 1R` as half_pnl and keep the
+            # remainder open. The trade is NOT recorded yet — only one
+            # trade entry per logical entry, finalized at the eventual
+            # full exit.
+            if pos != 0 and cfg.scale_out_at_1R and not half_closed:
+                one_R = cfg.sl  # 1R distance, expressed as a fraction (0.015 = 1.5%)
+                if pos == 1 and bar["high"] >= entry * (1 + one_R):
+                    # Long: half-close at +1R, lock in fraction × 1R in pp.
+                    half_pnl = cfg.scale_out_fraction * one_R * 100
+                    half_closed = True
+                elif pos == -1 and bar["low"] <= entry * (1 - one_R):
+                    # Short mirror.
+                    half_pnl = cfg.scale_out_fraction * one_R * 100
+                    half_closed = True
 
             if pos != 0:
                 if pos == 1:
