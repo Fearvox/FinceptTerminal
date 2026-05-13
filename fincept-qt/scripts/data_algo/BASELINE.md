@@ -32,6 +32,10 @@ python3 -m pytest propfirm_engine/tests/ -v --tb=line
 ./_check_build_env.sh
 # expect: exit 0 IF Qt 6.8.x is installed, otherwise exit 1 with
 # a clear "find_package Qt6 ... not compatible" diagnosis
+
+# Check 5 — ECC tools manifest drift probe
+python3 _check_ecc_manifest.py
+# expect: exit 1 — 3/17 declared files exist; see "Known-drift" below
 ```
 
 ## Current green state
@@ -41,7 +45,8 @@ python3 -m pytest propfirm_engine/tests/ -v --tb=line
 | `_smoke_imports.py` | 24/24 modules import | Includes `regime_dual_engine.py` after iter-4/5 restored it from `_attic/` |
 | `_check_vendor_sync.py` | 2 byte-identical + 1 expected-drift | `propfirm_engine/vendor/` mirrors are in sync |
 | `pytest propfirm_engine/tests/` | 48 passed, 0 failed | Covers atr_utils, fusion_panel, leap_moe_room, session_filter |
-| `_check_build_env.sh` | **BLOCKED** (exit 1) | See "Known-blocked" below — not a regression, a captured state |
+| `_check_build_env.sh` | **BLOCKED** (exit 1) | See "Known-blocked: C++" below — not a regression, a captured state |
+| `_check_ecc_manifest.py` | **DRIFT** (exit 1, 3/17 exist) | See "Known-drift: ECC manifest" below |
 
 ## Known-blocked: C++ cmake configure on this branch
 
@@ -75,6 +80,40 @@ allowed). To unblock locally either:
 
 The build status here is **captured, not blocking new work** — Python
 data_algo / propfirm_engine work doesn't require the C++ build to pass.
+
+## Known-drift: ECC tools manifest
+
+`.claude/ecc-tools.json` declares 17 `managedFiles` that the ECC bundle
+was configured to maintain on this repo. At time of capture, only 3 of
+those 17 exist:
+
+```
+existing: .claude/skills/everything-claude-code/SKILL.md
+          .agents/skills/everything-claude-code/SKILL.md
+          .claude/identity.json
+missing:  .codex/{config.toml, AGENTS.md, agents/{explorer,reviewer,docs-researcher}.toml}
+          .claude/{homunculus/..., rules/..., research/..., team/..., enterprise/...}
+          .claude/commands/{database-migration, feature-development, add-language-rules}.md
+          .agents/skills/everything-claude-code/agents/openai.yaml
+```
+
+The manifest is declaring **intent** ("ECC packages these would manage if
+generated"), not **state**. Not deleted from the manifest because the
+declarations are still meaningful — they record what packages we opted
+into when ECC was installed (workflow-pack, agentshield-pack,
+research-pack, team-config-sync, enterprise-controls).
+
+To converge:
+- Run the ECC tools CLI to regenerate the missing files, OR
+- Prune the manifest to only the packages whose outputs we actually want,
+  OR
+- Live with the drift; the probe will keep flagging it on each sweep.
+
+A related lie was fixed alongside this drift capture: `.claude/identity.json`
+previously declared `"domains": ["javascript"]` despite the repo having
+1521 .py files, a C++/Qt6 product, TypeScript desktop shell, and zero
+first-party JavaScript. Now reads
+`["python", "cpp", "qt", "typescript", "cmake"]` with a `correctionNote`.
 
 ## What this baseline does NOT cover
 
