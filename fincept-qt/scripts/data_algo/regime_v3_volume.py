@@ -15,7 +15,7 @@ v1/v2 的 regime 只看价格（ADX + BB width）。v3 加 volume 维度:
 import argparse, sys, os, math, statistics
 sys.path.insert(0, os.path.dirname(__file__))
 from strategy_bake_off import fetch_binance, ema, sma, stdev, s1_trend_ema, s6_mtf_combo, run_strategy
-from _attic.regime_dual_engine import adx, bb_width, classify_regime, fetch_any, run_dual_engine
+from regime_dual_engine import adx, bb_width, classify_regime, fetch_any, run_dual_engine
 
 
 def volume_delta(bars, period=20):

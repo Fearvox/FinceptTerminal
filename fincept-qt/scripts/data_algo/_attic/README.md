@@ -1,21 +1,42 @@
-# _attic — 已被取代的旧版本（lessons learned，非垃圾桶）
+# _attic — retrospective notes on falsified strategies
 
-这里放**经过严肃测试后被证伪、但保留作为参考的代码**。直接复用前先查 EverMem
-确认它为什么被取代。
+This is **not** a code attic. It's a place for written retrospectives
+about approaches that were tested and falsified. The actual code
+modules these documents reference stay in their production locations
+(e.g. `data_algo/regime_dual_engine.py`) because **a falsified strategy
+does not mean the underlying library is broken** — the `adx` /
+`bb_width` / `fetch_any` indicators inside `regime_dual_engine.py` are
+still in active use by `regime_v3_volume.py` and `propfirm_engine`.
 
-## 当前内容
+## Current contents
 
-### `regime_dual_engine.py` (归档于 2026-05-12)
-- **是什么**: ADX + BBW 的 dual-regime 引擎（trend / range 双引擎切换）
-- **为什么归档**: 8-scenario 跨市场实测仅 2/8 胜，S6 独用 4/8 最 universal
-- **EverMem 出处**: `regime-dual-engine-findings.md` 完整结论
-- **唯一仍在调用的位置**: `regime_v3_volume.py:18` 通过 `from _attic.regime_dual_engine import ...` 复用基础 indicator (`adx`, `bb_width`, `classify_regime`, `fetch_any`, `run_dual_engine`)；v3 在此基础上加了 volume 维度
+(retrospective documents to be added)
 
-## 复用规则
+## The dual-engine retrospective (2026-04 → 2026-05)
 
-1. 路径前缀必须保持 `_attic.` —— production 代码 import attic 是**有意为之的味道**，提醒
-   "你正在依赖一个被证伪的实现的一部分"。
-2. 想从 attic 里"救出"某个函数：先把它单独抽到 production 路径（如新建
-   `data_algo/regime_indicators.py`），再调整调用方。**不要在 production 与 attic
-   之间双向依赖。**
-3. attic 内容不要再扩展功能；只接受 bug fix 和 docstring 补充。
+The `regime_dual_engine.py` module was originally written to drive a
+"dual-engine" trading strategy: switch between a trend-follower and a
+range-trader based on ADX + BB-width regime classification. 8-scenario
+cross-market testing showed only 2/8 wins versus S6 alone winning 4/8
+on the same scenarios. The **strategy** was falsified — keeping two
+engines in parallel adds turnover without edge versus picking one and
+sticking with it.
+
+What is kept and what is dropped:
+
+- DROPPED: the "switch between engines based on regime" decision logic
+  (`run_dual_engine`). Future strategies should not call this — it's
+  preserved only so `regime_v3_volume.py` and `propfirm_engine` can
+  reuse the indicator primitives.
+- KEPT: the indicator functions (`adx`, `bb_width`, `classify_regime`,
+  `fetch_any`). These are arithmetic; the falsification was about
+  combining them into a trading rule, not about the math.
+
+The earlier short-lived move of the whole file into this `_attic/`
+directory was an over-correction; production code (`regime_v3_volume`)
+ended up importing from `_attic`, which is a smell. Restored to
+`data_algo/regime_dual_engine.py` in iter-4/5 of the v4/p2-atr-trail
+stability sweep on 2026-05-12.
+
+See EverMem: `regime-dual-engine-findings.md`,
+`strategy-bakeoff-results.md`.
