@@ -26,6 +26,7 @@ from .vendor.strategy_bake_off import s1_trend_ema, s6_mtf_combo
 from . import session_filter as _sf
 from . import atr_utils as _atr
 from . import confluence_scorer as _cs
+from . import mfe_tracker as _mfe
 
 
 @dataclass
@@ -54,6 +55,7 @@ class PropfirmResult:
     regime_count: dict[str, int] = field(default_factory=dict)
     filtered_out: int = 0  # bars where session filter blocked an entry
     filtered_confluence: int = 0  # bars where P3 confluence gate blocked entry
+    mfe_tracker: "_mfe.MfeTracker | None" = None  # P4: post-exit follow-up log
 
     def summary(self) -> dict[str, Any]:
         if not self.trades:
@@ -71,7 +73,7 @@ class PropfirmResult:
             cum += p
             peak = max(peak, cum)
             max_dd = max(max_dd, peak - cum)
-        return {
+        out = {
             "name": self.name,
             "symbol": self.symbol,
             "trades": len(self.trades),
@@ -83,6 +85,12 @@ class PropfirmResult:
             "filtered_out": self.filtered_out,
             "filtered_confluence": self.filtered_confluence,
         }
+        if self.mfe_tracker is not None:
+            # P4: surface leakage so backtest runners and tests can read
+            # it without reaching into the tracker. Default last_n=30 per
+            # spec §4.3; runners may compute their own slice if needed.
+            out["mfe_leakage"] = self.mfe_tracker.leakage_summary(last_n=30)
+        return out
 
 
 class PropfirmEngine:
@@ -104,6 +112,25 @@ class PropfirmEngine:
         # P3 confluence gate inputs (ATR + asset class). Computed once per run.
         atr_s = _atr.atr(bars, 14) if cfg.confluence_gate_on else None
         asset_class_for_cs = _sf.classify_symbol(symbol) if cfg.confluence_gate_on else None
+        # P4 MFE tracker — purely observational, never changes trade decisions.
+        tracker = _mfe.MfeTracker() if cfg.mfe_log_on else None
+        if tracker is not None:
+            result.mfe_tracker = tracker
+
+        def _log_exit(exit_idx: int, exit_price: float, side: int, pnl_pct: float) -> None:
+            """Register a just-closed trade with the MFE tracker if enabled.
+            `side` is +1 for long, -1 for short. No-op when mfe_log_on is False
+            so the call site stays single-line at each of the 5 exit branches."""
+            if tracker is None:
+                return
+            trade_id = f"t-{exit_idx}-{'L' if side == 1 else 'S'}"
+            tracker.register(
+                trade_id=trade_id,
+                exit_idx=exit_idx,
+                exit_price=exit_price,
+                direction="long" if side == 1 else "short",
+                realized_pnl_pct=pnl_pct,
+            )
 
         pos = 0
         entry = 0.0
@@ -113,6 +140,13 @@ class PropfirmEngine:
             bar = bars[i]
             regime = _v3.classify_v3(bars, i, adx_s, bbw_s, vd_s)
             result.regime_count[regime] = result.regime_count.get(regime, 0) + 1
+
+            # P4: advance MFE tracker on this bar BEFORE any exit-this-bar
+            # logic. Newly-registered trades from a prior bar still see
+            # this bar as elapsed=1; trades closed on THIS bar will be
+            # registered below and start tracking from the NEXT bar.
+            if tracker is not None:
+                tracker.advance(bars, i)
 
             # --- P1 session + news filter (applied to entries only) ---
             tradeable_now = True
@@ -141,43 +175,52 @@ class PropfirmEngine:
                         "pnl_pct": pnl, "reason": "regime_incompat",
                         "ts": bar.get("ts"),
                     })
+                    _log_exit(exit_idx=i, exit_price=bar["close"], side=pos, pnl_pct=pnl)
                     pos = 0
                     active = None
 
             if pos != 0:
                 if pos == 1:
                     if bar["low"] <= entry * (1 - cfg.sl):
+                        exit_px = entry * (1 - cfg.sl)
                         result.trades.append({
                             "side": "L", "regime": active, "entry": entry,
-                            "exit": entry * (1 - cfg.sl),
+                            "exit": exit_px,
                             "pnl_pct": -cfg.sl * 100, "reason": "SL",
                             "ts": bar.get("ts"),
                         })
+                        _log_exit(i, exit_px, side=1, pnl_pct=-cfg.sl * 100)
                         pos = 0; active = None
                     elif bar["high"] >= entry * (1 + cfg.tp):
+                        exit_px = entry * (1 + cfg.tp)
                         result.trades.append({
                             "side": "L", "regime": active, "entry": entry,
-                            "exit": entry * (1 + cfg.tp),
+                            "exit": exit_px,
                             "pnl_pct": cfg.tp * 100, "reason": "TP",
                             "ts": bar.get("ts"),
                         })
+                        _log_exit(i, exit_px, side=1, pnl_pct=cfg.tp * 100)
                         pos = 0; active = None
                 elif pos == -1:
                     if bar["high"] >= entry * (1 + cfg.sl):
+                        exit_px = entry * (1 + cfg.sl)
                         result.trades.append({
                             "side": "S", "regime": active, "entry": entry,
-                            "exit": entry * (1 + cfg.sl),
+                            "exit": exit_px,
                             "pnl_pct": -cfg.sl * 100, "reason": "SL",
                             "ts": bar.get("ts"),
                         })
+                        _log_exit(i, exit_px, side=-1, pnl_pct=-cfg.sl * 100)
                         pos = 0; active = None
                     elif bar["low"] <= entry * (1 - cfg.tp):
+                        exit_px = entry * (1 - cfg.tp)
                         result.trades.append({
                             "side": "S", "regime": active, "entry": entry,
-                            "exit": entry * (1 - cfg.tp),
+                            "exit": exit_px,
                             "pnl_pct": cfg.tp * 100, "reason": "TP",
                             "ts": bar.get("ts"),
                         })
+                        _log_exit(i, exit_px, side=-1, pnl_pct=cfg.tp * 100)
                         pos = 0; active = None
                 continue  # while in-position, do not consider new entries
 
