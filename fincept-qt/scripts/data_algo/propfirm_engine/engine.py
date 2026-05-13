@@ -29,6 +29,15 @@ from .vendor.regime_dual_engine import adx, bb_width
 from .vendor.strategy_bake_off import s1_trend_ema, s6_mtf_combo
 
 
+# Regimes where ATR chandelier trailing is allowed. P2 attempt-1 (2026-04-20)
+# applied trail unconditionally and damaged 6 of 7 positive-baseline scenarios:
+# range regimes (mm_range, range_divergent) have normal intrabar swing ≈ 1.5×
+# ATR, so the trail fires inside noise and cuts winners. P2.1 (this redesign)
+# restricts trail to trend-y regimes only; range regimes fall back to fixed SL.
+# Single-line check, zero new parameters. L2-compatible (no multiplier sweep).
+TREND_REGIMES = frozenset({"strong_long", "strong_short", "weak_trend"})
+
+
 @dataclass
 class PropfirmConfig:
     # P1
@@ -158,7 +167,8 @@ class PropfirmEngine:
 
             # --- Exit logic: SL / trail / TP ---
             if pos != 0:
-                if cfg.atr_trail_on and atr_s is not None:
+                # P2.1: trail only in trend regimes; range falls back to fixed SL.
+                if cfg.atr_trail_on and atr_s is not None and active in TREND_REGIMES:
                     # Update ratcheting chandelier SL
                     if pos == 1:
                         new_sl = _atr.chandelier_long_sl(entry_idx, i, bars, atr_s, mult)
