@@ -178,12 +178,16 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
 
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length).decode(errors="replace")
+        # P5b: log raw incoming body so 400s can be diagnosed
+        self.log_message("RECV body=%s", raw[:500])
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as e:
+            self.log_message("REJECT invalid-json: %s", str(e)[:200])
             self._reply(400, {"error": f"invalid json: {e}", "raw": raw[:200]})
             return
         if not isinstance(payload, dict):
+            self.log_message("REJECT not-dict payload-type=%s", type(payload).__name__)
             self._reply(400, {"error": "payload must be a json object"})
             return
 
@@ -192,15 +196,21 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             return self._handle_entry(payload)
         if "event" in payload:
             return self._handle_exit(payload)
+        # Neither action nor event — log keys for diagnosis
+        self.log_message("REJECT no-dispatch-key keys=%s", list(payload.keys()))
+        self._reply(400, {"error": "payload must contain 'action' or 'event' field", "keys": list(payload.keys())})
+        return
         self._reply(400, {"error": "payload must contain 'action' (entry) or 'event' (exit)"})
 
     def _handle_entry(self, p: dict):
         missing = [k for k in ENTRY_REQUIRED if k not in p]
         if missing:
-            self._reply(400, {"error": f"missing required fields: {missing}"})
+            self.log_message("REJECT entry-missing-fields %s have=%s", missing, list(p.keys()))
+            self._reply(400, {"error": f"missing required fields: {missing}", "received_keys": list(p.keys())})
             return
         action = str(p["action"]).lower()
         if action not in VALID_ACTIONS:
+            self.log_message("REJECT entry-bad-action %s", action)
             self._reply(400, {"error": f"action must be one of {sorted(VALID_ACTIONS)}"})
             return
 
