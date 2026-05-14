@@ -273,13 +273,16 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             self.log_message("NOTIFY_ENTRY_FAILED #%s: %s", row["id"], e)
 
         # P5b daemon auto-exec: only fire if notify wasn't rate-limited / cap-aborted
-        if notify_result and not notify_result.get("skipped"):
+        # AND if env P5B_AUTOEXEC_ENABLED=1 (safety gate after 3-BTC no-SL drawdown)
+        if notify_result and not notify_result.get("skipped") and os.environ.get("P5B_AUTOEXEC_ENABLED") == "1":
             try:
                 import urllib.request as _urlreq
                 trade_body = json.dumps({
                     "action": "buy" if side == "long" else "sell",
                     "ticker": row["symbol"],
                     "qty": 1,
+                    "sl": float(p.get("sl") or row["sl"]) if (p.get("sl") or row["sl"]) else None,
+                    "tp": float(p.get("tp1") or row["tp"]) if (p.get("tp1") or row["tp"]) else None,
                 }).encode()
                 req = _urlreq.Request(
                     "http://127.0.0.1:5556/trade",
@@ -289,9 +292,12 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
                 )
                 # fire-and-forget with short timeout — don't block webhook
                 _urlreq.urlopen(req, timeout=15)
-                self.log_message("DAEMON_TRADE_FIRED #%s %s", row["id"], side)
+                self.log_message("DAEMON_TRADE_FIRED #%s %s sl=%s tp=%s", row["id"], side,
+                                 p.get("sl") or row["sl"], p.get("tp1") or row["tp"])
             except Exception as e:  # pragma: no cover — daemon down must not break webhook
                 self.log_message("DAEMON_TRADE_FAILED #%s: %s", row["id"], e)
+        elif notify_result and not notify_result.get("skipped"):
+            self.log_message("DAEMON_TRADE_GATED #%s (P5B_AUTOEXEC_ENABLED!=1)", row["id"])
 
     def _handle_exit(self, p: dict):
         missing = [k for k in EXIT_REQUIRED if k not in p]
