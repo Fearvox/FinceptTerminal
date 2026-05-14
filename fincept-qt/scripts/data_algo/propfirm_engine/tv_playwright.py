@@ -221,9 +221,38 @@ def get_account_state(page) -> dict:
     }""")
 
 
+def _chart_symbol_matches(page, ticker: str | None) -> tuple[bool, str]:
+    """Check if current chart symbol matches the alert ticker."""
+    if not ticker:
+        return True, "no ticker filter"
+    # Title format: "SP500 7,510.40 ▲..." or "AAPL 299.00 ▲..."
+    title = page.title()
+    # Extract first token (symbol)
+    chart_sym = title.split()[0] if title else ""
+    # Match either bare symbol or exchange:symbol
+    alert_bare = ticker.split(":")[-1].upper()
+    chart_upper = chart_sym.upper()
+    # Substring match: GOLD in TVC:GOLD or SP500 in VANTAGE:SP500
+    matches = chart_upper == alert_bare or alert_bare in chart_upper or chart_upper in alert_bare
+    return matches, f"chart={chart_upper} alert={alert_bare}"
+
+
 def execute_signal(page, action: str, ticker: str | None = None, qty: int = 1) -> dict:
-    """End-to-end: ensure panel + verify tradable + click buy/sell."""
+    """End-to-end: ensure panel + verify tradable + click buy/sell.
+
+    If ticker is provided and doesn't match the current chart symbol, aborts
+    to prevent firing the wrong-asset trade. Operator should set chart to the
+    primary auto-trade symbol once + let webhook auto-fire only matching alerts.
+    """
     log: dict[str, Any] = {"action": action, "ticker": ticker, "qty": qty, "steps": []}
+
+    # Symbol mismatch guard
+    matches, detail = _chart_symbol_matches(page, ticker)
+    log["steps"].append({"step": "symbol_check", "matches": matches, "detail": detail})
+    if not matches:
+        log["aborted"] = f"chart-symbol-mismatch: {detail}"
+        return log
+
     s1 = ensure_panel(page)
     log["steps"].append({"step": "ensure_panel", "status": s1})
     if not s1.get("tradable"):
