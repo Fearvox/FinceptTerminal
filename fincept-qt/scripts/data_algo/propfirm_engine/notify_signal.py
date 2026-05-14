@@ -39,8 +39,14 @@ def _env_float(name: str, default: float) -> float:
 DEFAULT_ACCOUNT_SIZE = _env_float("P5B_ACCOUNT_SIZE", 100_000.0)
 DEFAULT_RISK_PCT = _env_float("P5B_RISK_PCT", 0.01)
 DEFAULT_MAX_LEVERAGE = _env_float("P5B_MAX_LEVERAGE", 25.0)
+DEFAULT_NOTIFY_COOLDOWN_SEC = _env_float("P5B_NOTIFY_COOLDOWN_SEC", 300.0)  # 5 min per (symbol, side)
 
 RAILS_LINE = "rails: no-BE | no-IQ-4of4 | no-Wolf | no-4+conf"
+
+# In-process per (symbol, side) last-notify timestamps. Survives webhook process
+# lifetime; resets on restart (acceptable — we don't want stale 5min holdovers
+# after operator restarts).
+_LAST_NOTIFY: dict[tuple[str, str], float] = {}
 
 
 def compute_position_size(
@@ -176,6 +182,22 @@ def notify_entry(
         )
         print(msg, file=sys.stderr)
         return {"skipped": True, "reason": "leverage_cap", **sizing}
+
+    # Per (symbol, side) rate-limit so 1m chop doesn't spam clipboard/notification.
+    import time as _time
+    key = (symbol, side)
+    last = _LAST_NOTIFY.get(key, 0.0)
+    elapsed = _time.time() - last
+    if elapsed < DEFAULT_NOTIFY_COOLDOWN_SEC:
+        wait_sec = DEFAULT_NOTIFY_COOLDOWN_SEC - elapsed
+        print(
+            f"[notify_signal] RATE-LIMITED entry for {symbol} {side}: "
+            f"last fired {elapsed:.0f}s ago (cooldown {DEFAULT_NOTIFY_COOLDOWN_SEC:.0f}s, "
+            f"wait {wait_sec:.0f}s). row_id={row_id}",
+            file=sys.stderr,
+        )
+        return {"skipped": True, "reason": "rate_limit", **sizing}
+    _LAST_NOTIFY[key] = _time.time()
 
     plan = _format_entry_plan(
         symbol=symbol,
