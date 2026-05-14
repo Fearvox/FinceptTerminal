@@ -38,7 +38,7 @@ def _env_float(name: str, default: float) -> float:
 
 DEFAULT_ACCOUNT_SIZE = _env_float("P5B_ACCOUNT_SIZE", 100_000.0)
 DEFAULT_RISK_PCT = _env_float("P5B_RISK_PCT", 0.01)
-DEFAULT_MAX_LEVERAGE = _env_float("P5B_MAX_LEVERAGE", 5.0)
+DEFAULT_MAX_LEVERAGE = _env_float("P5B_MAX_LEVERAGE", 25.0)
 
 RAILS_LINE = "rails: no-BE | no-IQ-4of4 | no-Wolf | no-4+conf"
 

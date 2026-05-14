@@ -180,8 +180,14 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length).decode(errors="replace")
         # P5b: log raw incoming body so 400s can be diagnosed
         self.log_message("RECV body=%s", raw[:500])
+        # Willy Pine template emits .50 instead of 0.50 (no leading zero).
+        # Repair before parse: insert 0 between separators and a bare decimal point.
+        import re as _re
+        repaired = _re.sub(r'(?<=[:,\[\s])(-?)\.(\d)', r'\g<1>0.\2', raw)
+        if repaired != raw:
+            self.log_message("REPAIRED leading-decimal: %s", repaired[:200])
         try:
-            payload = json.loads(raw)
+            payload = json.loads(repaired)
         except json.JSONDecodeError as e:
             self.log_message("REJECT invalid-json: %s", str(e)[:200])
             self._reply(400, {"error": f"invalid json: {e}", "raw": raw[:200]})
