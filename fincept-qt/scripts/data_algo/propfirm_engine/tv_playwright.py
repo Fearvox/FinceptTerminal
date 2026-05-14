@@ -156,54 +156,91 @@ def _ensure_market_mode(page) -> bool:
     return True
 
 
-def click_buy(page) -> dict:
-    """Set buy side via ribbon + submit via place-and-modify-button. Market mode."""
+def _resilient_click(locator, label: str) -> dict:
+    """Try normal click; if visibility check fails, retry with force=True."""
+    try:
+        locator.click(timeout=3_000)
+        return {"clicked": label, "method": "normal"}
+    except Exception:
+        try:
+            locator.click(timeout=3_000, force=True)
+            return {"clicked": label, "method": "force"}
+        except Exception as e:
+            return {"error": f"{label} click failed (both modes): {str(e)[:200]}"}
+
+
+def _set_side_via_form(page, side: str) -> dict:
+    """Switch order form side via ribbon (best-effort, may be CSS-hidden)."""
+    target_dn = "buy-order-button" if side == "buy" else "sell-order-button"
+    btn = page.locator(f'[data-name="{target_dn}"]').first
+    if btn.count() == 0:
+        return {"error": f"{target_dn} not in DOM"}
+    return _resilient_click(btn, f"{side}-ribbon")
+
+
+def _set_qty_in_form(page, qty: int) -> dict:
+    """Find the qty input (first visible text input in order panel) and set value."""
+    js = """(qty) => {
+        const inputs = Array.from(document.querySelectorAll('input[type=text]')).filter(e => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && r.y < 350;  // top of form, before TP/SL prices
+        });
+        if (inputs.length === 0) return {error: 'no qty input found'};
+        const input = inputs[0];
+        const oldValue = input.value;
+        // Set value via native setter (React-aware)
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(input, String(qty));
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+        input.dispatchEvent(new Event('change', {bubbles: true}));
+        return {oldValue, newValue: input.value};
+    }"""
+    return page.evaluate(js, qty)
+
+
+def _click_submit_once(page, side: str) -> dict:
+    """Single submit of place-and-modify-button at current form state."""
     try:
         _ensure_market_mode(page)
     except Exception:
         pass
-    # Click buy ribbon (sets side=buy in the form)
-    ribbon = page.locator('[data-name="buy-order-button"]').first
-    if ribbon.count() == 0:
-        return {"error": "buy-order-button not in DOM"}
-    try:
-        ribbon.click(timeout=5_000)
-        time.sleep(0.3)
-    except Exception as e:
-        return {"error": f"ribbon click failed: {e}"}
-    # Click the actual submit button
+    _set_side_via_form(page, side)  # best-effort, may error on hidden ribbon
     submit = page.locator('[data-name="place-and-modify-button"]').first
     if submit.count() == 0:
-        return {"error": "place-and-modify-button not in DOM", "ribbon_clicked": True}
-    try:
-        submit.click(timeout=5_000)
-        return {"clicked": "buy", "submitted": True}
-    except Exception as e:
-        return {"error": f"submit click failed: {e}", "ribbon_clicked": True}
+        return {"error": "place-and-modify-button not in DOM"}
+    submit_text = submit.text_content() or ""
+    r = _resilient_click(submit, f"{side}-submit")
+    if "error" in r:
+        return {"error": r["error"], "submit_text": submit_text[:80]}
+    return {"clicked": side, "submitted": True, "submit_text": submit_text[:80]}
 
 
-def click_sell(page) -> dict:
-    """Set sell side + submit via place-and-modify-button. Market mode."""
-    try:
-        _ensure_market_mode(page)
-    except Exception:
-        pass
-    ribbon = page.locator('[data-name="sell-order-button"]').first
-    if ribbon.count() == 0:
-        return {"error": "sell-order-button not in DOM"}
-    try:
-        ribbon.click(timeout=5_000)
-        time.sleep(0.3)
-    except Exception as e:
-        return {"error": f"ribbon click failed: {e}"}
-    submit = page.locator('[data-name="place-and-modify-button"]').first
-    if submit.count() == 0:
-        return {"error": "place-and-modify-button not in DOM", "ribbon_clicked": True}
-    try:
-        submit.click(timeout=5_000)
-        return {"clicked": "sell", "submitted": True}
-    except Exception as e:
-        return {"error": f"submit click failed: {e}", "ribbon_clicked": True}
+def click_buy(page, qty: int = 1) -> dict:
+    """Place N market BUY orders by clicking submit N times (form qty stays 1 per click)."""
+    results = []
+    for i in range(qty):
+        r = _click_submit_once(page, "buy")
+        results.append(r)
+        if "error" in r:
+            return {"error": r["error"], "filled": i, "results": results}
+        if i < qty - 1:
+            time.sleep(0.4)  # space submits so TV doesn't dedupe
+    return {"clicked": "buy", "qty_requested": qty, "qty_submitted": qty,
+            "submitted": True, "submit_text": results[-1].get("submit_text", "") if results else ""}
+
+
+def click_sell(page, qty: int = 1) -> dict:
+    """Place N market SELL orders by clicking submit N times."""
+    results = []
+    for i in range(qty):
+        r = _click_submit_once(page, "sell")
+        results.append(r)
+        if "error" in r:
+            return {"error": r["error"], "filled": i, "results": results}
+        if i < qty - 1:
+            time.sleep(0.4)
+    return {"clicked": "sell", "qty_requested": qty, "qty_submitted": qty,
+            "submitted": True, "submit_text": results[-1].get("submit_text", "") if results else ""}
 
 
 def get_account_state(page) -> dict:
@@ -259,9 +296,9 @@ def execute_signal(page, action: str, ticker: str | None = None, qty: int = 1) -
         log["aborted"] = "not tradable: " + s1.get("panel_msg", "no buy-order-button found")
         return log
     if action.lower() in ("buy", "long"):
-        click = click_buy(page)
+        click = click_buy(page, qty=qty)
     elif action.lower() in ("sell", "short"):
-        click = click_sell(page)
+        click = click_sell(page, qty=qty)
     else:
         log["aborted"] = f"unknown action: {action}"
         return log
