@@ -48,6 +48,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .log_tv_trade import open_trade
+from . import notify_signal
 from .trade_journal import DEFAULT_DB_PATH, connect
 
 
@@ -240,6 +241,20 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
                          row["id"], row["symbol"], side,
                          row["entry_price"], row["tp"], row["setup_reason"])
 
+        # P5b manual-click router: notify operator + pbcopy trade plan
+        try:
+            notify_signal.notify_entry(
+                symbol=row["symbol"],
+                side=side,
+                entry=float(row["entry_price"]),
+                sl=float(row["sl"]),
+                tp=float(row["tp"]),
+                setup=row["setup_reason"],
+                row_id=row["id"],
+            )
+        except Exception as e:  # pragma: no cover — notify failure must not break webhook
+            self.log_message("NOTIFY_ENTRY_FAILED #%s: %s", row["id"], e)
+
     def _handle_exit(self, p: dict):
         missing = [k for k in EXIT_REQUIRED if k not in p]
         if missing:
@@ -298,6 +313,15 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             self.log_message("EXIT #%s %s %s @ %s reason=%s pnl=%+.2f%%",
                              trade_id, ticker, event, price, reason,
                              closed["pnl_pct"])
+            try:
+                notify_signal.notify_exit(
+                    symbol=ticker,
+                    exit_reason=reason,
+                    pnl_pct=closed.get("pnl_pct"),
+                    row_id=trade_id,
+                )
+            except Exception as e:  # pragma: no cover
+                self.log_message("NOTIFY_EXIT_FAILED #%s: %s", trade_id, e)
             return
 
         # Unreachable, but defensive
