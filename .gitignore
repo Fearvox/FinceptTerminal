@@ -142,3 +142,6 @@ fincept-qt/scripts/data_algo/propfirm_engine/reports/*.json
 fincept-qt/scripts/data_algo/propfirm_engine/reports/*.csv
 # keep news calendar tracked despite global *.yaml rule above
 !fincept-qt/scripts/data_algo/propfirm_engine/news_calendar.yaml
+
+# goalv3-cc per-goal state (skill convention)
+.goal/
