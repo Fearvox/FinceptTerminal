@@ -258,8 +258,9 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
                          row["entry_price"], row["tp"], row["setup_reason"])
 
         # P5b manual-click router: notify operator + pbcopy trade plan
+        notify_result = None
         try:
-            notify_signal.notify_entry(
+            notify_result = notify_signal.notify_entry(
                 symbol=row["symbol"],
                 side=side,
                 entry=float(row["entry_price"]),
@@ -270,6 +271,27 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             )
         except Exception as e:  # pragma: no cover — notify failure must not break webhook
             self.log_message("NOTIFY_ENTRY_FAILED #%s: %s", row["id"], e)
+
+        # P5b daemon auto-exec: only fire if notify wasn't rate-limited / cap-aborted
+        if notify_result and not notify_result.get("skipped"):
+            try:
+                import urllib.request as _urlreq
+                trade_body = json.dumps({
+                    "action": "buy" if side == "long" else "sell",
+                    "ticker": row["symbol"],
+                    "qty": 1,
+                }).encode()
+                req = _urlreq.Request(
+                    "http://127.0.0.1:5556/trade",
+                    data=trade_body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                # fire-and-forget with short timeout — don't block webhook
+                _urlreq.urlopen(req, timeout=15)
+                self.log_message("DAEMON_TRADE_FIRED #%s %s", row["id"], side)
+            except Exception as e:  # pragma: no cover — daemon down must not break webhook
+                self.log_message("DAEMON_TRADE_FAILED #%s: %s", row["id"], e)
 
     def _handle_exit(self, p: dict):
         missing = [k for k in EXIT_REQUIRED if k not in p]
