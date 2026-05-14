@@ -27,6 +27,7 @@ from . import session_filter as _sf
 from . import atr_utils as _atr
 from . import confluence_scorer as _cs
 from . import mfe_tracker as _mfe
+from . import pn_sizing as _pn
 
 
 def compose_scale_out_pnl(half_closed: bool, half_pnl: float,
@@ -84,14 +85,17 @@ class PropfirmResult:
     regime_count: dict[str, int] = field(default_factory=dict)
     filtered_out: int = 0  # bars where session filter blocked an entry
     filtered_confluence: int = 0  # bars where P3 confluence gate blocked entry
+    pn_sizing_blocked: int = 0  # P5: bars where pn_sizing skip-day blocked
     mfe_tracker: "_mfe.MfeTracker | None" = None  # P4: post-exit follow-up log
+    pn_sizer: "_pn.PNSizer | None" = None  # P5: sizing state machine
 
     def summary(self) -> dict[str, Any]:
         if not self.trades:
             return {"name": self.name, "symbol": self.symbol, "trades": 0,
                     "regime_count": self.regime_count,
                     "filtered_out": self.filtered_out,
-                    "filtered_confluence": self.filtered_confluence}
+                    "filtered_confluence": self.filtered_confluence,
+                    "pn_sizing_blocked": self.pn_sizing_blocked}
         pnls = [t["pnl_pct"] for t in self.trades]
         wins = sum(1 for p in pnls if p > 0)
         total = sum(pnls)
@@ -113,12 +117,22 @@ class PropfirmResult:
             "regime_count": self.regime_count,
             "filtered_out": self.filtered_out,
             "filtered_confluence": self.filtered_confluence,
+            "pn_sizing_blocked": self.pn_sizing_blocked,
         }
         if self.mfe_tracker is not None:
             # P4: surface leakage so backtest runners and tests can read
             # it without reaching into the tracker. Default last_n=30 per
             # spec §4.3; runners may compute their own slice if needed.
             out["mfe_leakage"] = self.mfe_tracker.leakage_summary(last_n=30)
+        if self.pn_sizer is not None:
+            # P5: surface a compact sizing state snapshot for backtest
+            # runners / reports. Just summary counts, no per-day map dump.
+            out["pn_sizing_state"] = {
+                "current_loss_streak": self.pn_sizer.current_loss_streak(),
+                "consecutive_loss_block": self.pn_sizer.consecutive_loss_block,
+                "daily_trade_target": self.pn_sizer.daily_trade_target,
+                "risk_per_trade": self.pn_sizer.risk_per_trade,
+            }
         return out
 
 
@@ -146,20 +160,32 @@ class PropfirmEngine:
         if tracker is not None:
             result.mfe_tracker = tracker
 
-        def _log_exit(exit_idx: int, exit_price: float, side: int, pnl_pct: float) -> None:
-            """Register a just-closed trade with the MFE tracker if enabled.
-            `side` is +1 for long, -1 for short. No-op when mfe_log_on is False
-            so the call site stays single-line at each of the 5 exit branches."""
-            if tracker is None:
-                return
-            trade_id = f"t-{exit_idx}-{'L' if side == 1 else 'S'}"
-            tracker.register(
-                trade_id=trade_id,
-                exit_idx=exit_idx,
-                exit_price=exit_price,
-                direction="long" if side == 1 else "short",
-                realized_pnl_pct=pnl_pct,
-            )
+        # P5 P.N. sizer — gates entries (skip-day) + records every closed trade
+        # so the loss streak can fire the next-day block. Sizer is "decisioning"
+        # (unlike mfe_tracker which is observational): entries are skipped when
+        # can_trade_now returns False.
+        sizer = _pn.PNSizer() if cfg.pn_sizing_on else None
+        if sizer is not None:
+            result.pn_sizer = sizer
+
+        def _log_exit(exit_idx: int, exit_price: float, side: int, pnl_pct: float,
+                      ts) -> None:
+            """Register a just-closed trade with the MFE tracker AND P5 sizer
+            if enabled. `side` is +1 for long, -1 for short. `pnl_pct` is the
+            FINAL realized pnl (post-scale-out average where applicable);
+            both downstream consumers want the canonical post-engine value.
+            No-op when neither flag is on, so call sites stay single-line."""
+            if tracker is not None:
+                trade_id = f"t-{exit_idx}-{'L' if side == 1 else 'S'}"
+                tracker.register(
+                    trade_id=trade_id,
+                    exit_idx=exit_idx,
+                    exit_price=exit_price,
+                    direction="long" if side == 1 else "short",
+                    realized_pnl_pct=pnl_pct,
+                )
+            if sizer is not None:
+                sizer.register_trade(pnl_pct=pnl_pct, ts=ts)
 
         pos = 0
         entry = 0.0
@@ -210,7 +236,8 @@ class PropfirmEngine:
                         "pnl_pct": final_pnl, "reason": "regime_incompat",
                         "ts": bar.get("ts"),
                     })
-                    _log_exit(exit_idx=i, exit_price=bar["close"], side=pos, pnl_pct=final_pnl)
+                    _log_exit(exit_idx=i, exit_price=bar["close"], side=pos,
+                              pnl_pct=final_pnl, ts=bar.get("ts"))
                     pos = 0
                     active = None
                     half_closed = False
@@ -254,7 +281,7 @@ class PropfirmEngine:
                             "pnl_pct": final_pnl, "reason": "SL",
                             "ts": bar.get("ts"),
                         })
-                        _log_exit(i, exit_px, side=1, pnl_pct=final_pnl)
+                        _log_exit(i, exit_px, side=1, pnl_pct=final_pnl, ts=bar.get("ts"))
                         pos = 0; active = None
                         half_closed = False; half_pnl = 0.0
                     elif bar["high"] >= entry * (1 + tp_for_remainder):
@@ -269,7 +296,7 @@ class PropfirmEngine:
                             "pnl_pct": final_pnl, "reason": "TP",
                             "ts": bar.get("ts"),
                         })
-                        _log_exit(i, exit_px, side=1, pnl_pct=final_pnl)
+                        _log_exit(i, exit_px, side=1, pnl_pct=final_pnl, ts=bar.get("ts"))
                         pos = 0; active = None
                         half_closed = False; half_pnl = 0.0
                 elif pos == -1:
@@ -285,7 +312,7 @@ class PropfirmEngine:
                             "pnl_pct": final_pnl, "reason": "SL",
                             "ts": bar.get("ts"),
                         })
-                        _log_exit(i, exit_px, side=-1, pnl_pct=final_pnl)
+                        _log_exit(i, exit_px, side=-1, pnl_pct=final_pnl, ts=bar.get("ts"))
                         pos = 0; active = None
                         half_closed = False; half_pnl = 0.0
                     elif bar["low"] <= entry * (1 - tp_for_remainder):
@@ -300,7 +327,7 @@ class PropfirmEngine:
                             "pnl_pct": final_pnl, "reason": "TP",
                             "ts": bar.get("ts"),
                         })
-                        _log_exit(i, exit_px, side=-1, pnl_pct=final_pnl)
+                        _log_exit(i, exit_px, side=-1, pnl_pct=final_pnl, ts=bar.get("ts"))
                         pos = 0; active = None
                         half_closed = False; half_pnl = 0.0
                 continue  # while in-position, do not consider new entries
@@ -308,6 +335,14 @@ class PropfirmEngine:
             # --- Entry logic ---
             if not tradeable_now:
                 result.filtered_out += 1
+                continue
+
+            # --- P5 sizing gate (skip-day block) ---
+            # Fires BEFORE confluence per packet spec: a skip-day is a hard
+            # block that no signal quality can override. When pn_sizing_on
+            # is off (default), this is a no-op.
+            if sizer is not None and not sizer.can_trade_now(bar.get("ts")):
+                result.pn_sizing_blocked += 1
                 continue
 
             signal = None
