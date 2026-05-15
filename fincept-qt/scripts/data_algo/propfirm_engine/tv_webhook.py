@@ -103,9 +103,19 @@ def _close_trade(db: str, trade_id: int, exit_price: float,
 
 
 def _setup_reason_from_entry(p: dict) -> str:
-    """Build a rich, grep-friendly setup_reason from Willy alert fields."""
+    """Build a rich, grep-friendly setup_reason from alert fields.
+
+    Prefix is the `source` field from the payload (lowercased, sanitized),
+    defaulting to 'willy' for backward compat with the original SATS /
+    Precision Sniper scripts that don't send `source`. Downstream the
+    setup_reason prefix is parsed back as source for per-script
+    journal analytics (see compare_signals_by_source.py).
+    """
     action = str(p.get("action", "?"))
-    parts = [f"willy_{action}"]
+    src = str(p.get("source") or "willy").lower()
+    # Keep prefix grep-friendly: alnum + underscore only.
+    src = "".join(c for c in src if c.isalnum() or c == "_") or "willy"
+    parts = [f"{src}_{action}"]
     if "grade" in p:
         parts.append(f"grade{p['grade']}")
     if "tqi" in p and p["tqi"] is not None:
