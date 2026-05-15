@@ -209,9 +209,29 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
         self._reply(400, {"error": "payload must contain 'action' (entry) or 'event' (exit)"})
 
     def _handle_entry(self, p: dict):
-        missing = [k for k in ENTRY_REQUIRED if k not in p]
+        # P5b: SMC source uses relaxed schema (no sl/tp1 required — synthesized 1% SL / 2% TP)
+        is_smc = str(p.get("source") or "").lower() == "smc"
+        if is_smc:
+            smc_required = ("action", "ticker", "price")
+            missing = [k for k in smc_required if k not in p]
+            if not missing:
+                # synthesize sl + tp1 (1% SL, 2% TP for 1:2 R:R)
+                try:
+                    price = float(p["price"])
+                    action_lc = str(p["action"]).lower()
+                    if "sl" not in p or p.get("sl") is None:
+                        p["sl"] = price * (0.99 if action_lc == "buy" else 1.01)
+                    if "tp1" not in p or p.get("tp1") is None:
+                        p["tp1"] = price * (1.02 if action_lc == "buy" else 0.98)
+                    # SMC gets high conviction score+tqi to bypass quality filter
+                    if "score" not in p: p["score"] = 50
+                    if "tqi" not in p: p["tqi"] = 0.7
+                except Exception:
+                    pass
+        else:
+            missing = [k for k in ENTRY_REQUIRED if k not in p]
         if missing:
-            self.log_message("REJECT entry-missing-fields %s have=%s", missing, list(p.keys()))
+            self.log_message("REJECT entry-missing-fields %s have=%s source=%s", missing, list(p.keys()), p.get("source"))
             self._reply(400, {"error": f"missing required fields: {missing}", "received_keys": list(p.keys())})
             return
         action = str(p["action"]).lower()
@@ -233,6 +253,9 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
                 regime=_regime_from_entry(p),
                 entry_ts=None,           # webhook receives near-realtime; use server now
             )
+            if is_smc:
+                self.log_message("SMC_ENTRY #%s %s event=%s synthesized sl=%s tp=%s",
+                                 row["id"], side, p.get("event"), p["sl"], p["tp1"])
         except (ValueError, TypeError) as e:
             self._reply(400, {"error": f"bad payload: {e}"})
             return
