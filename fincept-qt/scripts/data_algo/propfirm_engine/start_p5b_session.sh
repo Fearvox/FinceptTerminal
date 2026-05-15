@@ -25,23 +25,32 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
 DATA_ALGO="$REPO_ROOT/fincept-qt/scripts/data_algo"
 PY=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3
 
-# ── 1. Resolve secret — priority: env → ~/.zshrc → ~/.secrets/ file ─────
-# The .secrets/ fallback is the canonical home for new per-script secrets
-# (mode 0600). Survives terminal restarts, never enters shell history.
+# ── 1. Resolve secret — priority: ~/.secrets/ file → env → ~/.zshrc ─────
+# The .secrets/ file is the canonical home (mode 0600, no shell history,
+# survives restarts). It takes priority over env so that the operator
+# rotating the secret only has to touch one place: the file. Env stays
+# as a CI/automation fallback.
 SECRET_FILE="${TV_WEBHOOK_SECRET_FILE:-$HOME/.secrets/Webhook_Secret_FinceptEdgev2.txt}"
 
+if [[ -r "$SECRET_FILE" ]]; then
+    # Trim trailing whitespace/newlines so the exact-match check in
+    # tv_webhook._check_secret() passes.
+    FILE_SECRET="$(tr -d '[:space:]' < "$SECRET_FILE")"
+    if [[ -n "$FILE_SECRET" ]]; then
+        if [[ -n "${TV_WEBHOOK_SECRET:-}" ]] && [[ "$TV_WEBHOOK_SECRET" != "$FILE_SECRET" ]]; then
+            echo "⚠ env TV_WEBHOOK_SECRET (${#TV_WEBHOOK_SECRET} chars) differs from $SECRET_FILE (${#FILE_SECRET} chars) — file wins"
+        fi
+        TV_WEBHOOK_SECRET="$FILE_SECRET"
+        export TV_WEBHOOK_SECRET
+        echo "✓ TV_WEBHOOK_SECRET loaded from $SECRET_FILE"
+    fi
+fi
 if [[ -z "${TV_WEBHOOK_SECRET:-}" ]]; then
     # shellcheck disable=SC1090
     source ~/.zshrc 2>/dev/null || true
 fi
-if [[ -z "${TV_WEBHOOK_SECRET:-}" ]] && [[ -r "$SECRET_FILE" ]]; then
-    # Trim trailing whitespace/newlines so the JSON match in tv_webhook is exact.
-    TV_WEBHOOK_SECRET="$(tr -d '[:space:]' < "$SECRET_FILE")"
-    export TV_WEBHOOK_SECRET
-    echo "✓ TV_WEBHOOK_SECRET loaded from $SECRET_FILE"
-fi
 if [[ -z "${TV_WEBHOOK_SECRET:-}" ]]; then
-    echo "✖ TV_WEBHOOK_SECRET not set (tried env, ~/.zshrc, $SECRET_FILE)" >&2
+    echo "✖ TV_WEBHOOK_SECRET not set (tried $SECRET_FILE, env, ~/.zshrc)" >&2
     exit 1
 fi
 echo "✓ TV_WEBHOOK_SECRET present (${#TV_WEBHOOK_SECRET} chars)"
@@ -71,8 +80,25 @@ if ! curl -s --max-time 2 http://127.0.0.1:5555/health > /dev/null; then
 fi
 
 if [[ "$NO_TUNNEL" == "1" ]]; then
-    echo ""
-    echo "✓ session ready locally (no tunnel). Use curl 127.0.0.1:5555 for tests."
+    # If an existing quick tunnel is already up (common after a secret
+    # rotation where we only want to reload webhook), surface its URL +
+    # the freshly-built full alert URL so the operator can pbcopy it
+    # straight into TV without re-running the full launcher.
+    EXISTING_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/p5b_tunnel.log 2>/dev/null | tail -1 || true)
+    if [[ -n "$EXISTING_URL" ]]; then
+        FULL_URL="${EXISTING_URL}/tv-signal?secret=${TV_WEBHOOK_SECRET}"
+        # Push to clipboard so the secret never lands in shell history /
+        # this script's stdout. The plain URL (no secret) is printed for
+        # context, then the full URL goes silently to pbcopy.
+        printf "%s" "$FULL_URL" | pbcopy
+        echo ""
+        echo "✓ session ready locally (no tunnel)."
+        echo "✓ existing tunnel: $EXISTING_URL"
+        echo "✓ full TV alert URL (with new secret) copied to clipboard — paste into TV alert"
+    else
+        echo ""
+        echo "✓ session ready locally (no tunnel). Use curl 127.0.0.1:5555 for tests."
+    fi
     exit 0
 fi
 
