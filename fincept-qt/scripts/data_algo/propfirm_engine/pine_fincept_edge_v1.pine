@@ -170,37 +170,35 @@ var bool   tp2_done   = false
 var bool   tp3_done   = false
 var bool   trail_armed = false  // becomes true after 1R MFE
 
-reset_state() =>
-    open_entry := na
-    open_sl    := na
-    open_tp1   := na
-    open_tp2   := na
-    open_tp3   := na
-    open_side  := na
-    tp1_done   := false
-    tp2_done   := false
-    tp3_done   := false
-    trail_armed := false
+// NOTE: Pine v5 forbids mutating global `var` from inside a function,
+// so we inline state transitions at each call site instead of using
+// a reset_state() helper.
 
 // Open new long
 if fire_long
-    reset_state()
     open_entry := close
     open_sl    := long_sl
     open_tp1   := long_tp1
     open_tp2   := long_tp2
     open_tp3   := long_tp3
     open_side  := "long"
+    tp1_done   := false
+    tp2_done   := false
+    tp3_done   := false
+    trail_armed := false
 
 // Open new short
 if fire_short
-    reset_state()
     open_entry := close
     open_sl    := short_sl
     open_tp1   := short_tp1
     open_tp2   := short_tp2
     open_tp3   := short_tp3
     open_side  := "short"
+    tp1_done   := false
+    tp2_done   := false
+    tp3_done   := false
+    trail_armed := false
 
 // ATR trail: arm after 1R MFE, then ratchet SL toward price
 sl_hit  = false
@@ -253,9 +251,18 @@ if not na(open_side)
             tp3_done := true
             tp3_hit := true
 
-// Close state on SL hit
+// Close state on SL hit (inlined — see note above about Pine v5 fn rules)
 if sl_hit
-    reset_state()
+    open_entry := na
+    open_sl    := na
+    open_tp1   := na
+    open_tp2   := na
+    open_tp3   := na
+    open_side  := na
+    tp1_done   := false
+    tp2_done   := false
+    tp3_done   := false
+    trail_armed := false
 
 // ─────────────── WEBHOOK PAYLOAD BUILDERS ──────────────────────────
 fmt_p(x) => str.tostring(x, "#.#######")
