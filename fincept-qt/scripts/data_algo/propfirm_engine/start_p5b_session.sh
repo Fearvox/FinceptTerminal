@@ -25,13 +25,23 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
 DATA_ALGO="$REPO_ROOT/fincept-qt/scripts/data_algo"
 PY=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3
 
-# ── 1. Verify env ────────────────────────────────────────────────────────
+# ── 1. Resolve secret — priority: env → ~/.zshrc → ~/.secrets/ file ─────
+# The .secrets/ fallback is the canonical home for new per-script secrets
+# (mode 0600). Survives terminal restarts, never enters shell history.
+SECRET_FILE="${TV_WEBHOOK_SECRET_FILE:-$HOME/.secrets/Webhook_Secret_FinceptEdgev2.txt}"
+
 if [[ -z "${TV_WEBHOOK_SECRET:-}" ]]; then
     # shellcheck disable=SC1090
     source ~/.zshrc 2>/dev/null || true
 fi
+if [[ -z "${TV_WEBHOOK_SECRET:-}" ]] && [[ -r "$SECRET_FILE" ]]; then
+    # Trim trailing whitespace/newlines so the JSON match in tv_webhook is exact.
+    TV_WEBHOOK_SECRET="$(tr -d '[:space:]' < "$SECRET_FILE")"
+    export TV_WEBHOOK_SECRET
+    echo "✓ TV_WEBHOOK_SECRET loaded from $SECRET_FILE"
+fi
 if [[ -z "${TV_WEBHOOK_SECRET:-}" ]]; then
-    echo "✖ TV_WEBHOOK_SECRET not set (check ~/.zshrc)" >&2
+    echo "✖ TV_WEBHOOK_SECRET not set (tried env, ~/.zshrc, $SECRET_FILE)" >&2
     exit 1
 fi
 echo "✓ TV_WEBHOOK_SECRET present (${#TV_WEBHOOK_SECRET} chars)"
