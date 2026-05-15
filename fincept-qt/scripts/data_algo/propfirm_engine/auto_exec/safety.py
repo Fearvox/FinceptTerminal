@@ -148,7 +148,7 @@ class PositionLock:
     def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
         self._db_path = db_path
 
-    def check(self, symbol: str, source: str) -> tuple[bool, str]:
+    def check(self, symbol: str, source: str, exclude_id: int | None = None) -> tuple[bool, str]:
         """Return ``(allowed, reason)``.
 
         ``allowed`` is ``False`` if there is already an open trade for this
@@ -159,6 +159,10 @@ class PositionLock:
         distinct from unprefixed (``SOLUSDC.P``) because each Pine source labels
         its own tickers.
 
+        ``exclude_id`` lets a caller skip a specific journal row — typically
+        the row the webhook just inserted for the alert it is dispatching for
+        (otherwise the freshly-written row would block its own dispatch).
+
         Reason examples::
 
             "lock:fincept_already_open_on_SOLUSDC.P_trade_id_822"
@@ -168,6 +172,9 @@ class PositionLock:
             symbol: The raw ticker string from the payload (case will be
                 normalised for the query but preserved in the reason string).
             source: The ``source`` field from the entry payload.
+            exclude_id: Optional journal id to exclude from the open-trades
+                query — used to ignore the just-written row for the current
+                alert.
 
         Returns:
             Tuple of (allowed, reason_string).
@@ -177,13 +184,16 @@ class PositionLock:
             WHERE LOWER(symbol) = LOWER(?)
               AND exit_ts IS NULL
               AND setup_reason LIKE ?
+              AND (? IS NULL OR id != ?)
             ORDER BY id DESC
             LIMIT 1
         """
         pattern = f"{source}_%"
         try:
             with sqlite3.connect(self._db_path) as conn:
-                row = conn.execute(sql, (symbol, pattern)).fetchone()
+                row = conn.execute(
+                    sql, (symbol, pattern, exclude_id, exclude_id)
+                ).fetchone()
         except sqlite3.OperationalError as exc:
             # Table may not exist yet on a fresh install — treat as clear.
             logger.warning("position_lock_db_error symbol=%s source=%s err=%s", symbol, source, exc)
@@ -367,8 +377,14 @@ class SafetyRails:
                         source, symbol, reason)
             return False, reason
 
-        # 3. Position lock
-        ok, reason = self._lock.check(symbol, source)
+        # 3. Position lock — pass self_row_id so the just-written journal row
+        # for the current alert doesn't block its own dispatch.
+        self_row_id = payload.get("self_row_id")
+        if isinstance(self_row_id, int):
+            exclude_id: int | None = self_row_id
+        else:
+            exclude_id = None
+        ok, reason = self._lock.check(symbol, source, exclude_id=exclude_id)
         if not ok:
             logger.info("can_dispatch=False gate=position_lock source=%s symbol=%s reason=%s",
                         source, symbol, reason)

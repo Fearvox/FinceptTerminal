@@ -472,6 +472,10 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
                 "leverage": int(p.get("leverage") or 10),
                 "sl_price": float(p.get("sl") or row["sl"]) if (p.get("sl") or row["sl"]) else None,
                 "tp1_price": float(p.get("tp1") or row["tp"]) if (p.get("tp1") or row["tp"]) else None,
+                # Pass the journal id we just wrote so PositionLock excludes it
+                # from its "already open?" check — otherwise the fresh row blocks
+                # the dispatch we're trying to make for that very row.
+                "self_row_id": int(row["id"]),
             }
             _ax_result = _get_autoexec_dispatcher().on_entry_alert(_ax_payload)
             if _ax_result.get("dispatched"):
