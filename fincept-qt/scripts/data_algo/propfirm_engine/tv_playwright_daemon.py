@@ -47,14 +47,14 @@ def _init_session(cdp_url: str = "http://127.0.0.1:9222"):
     print(f"[daemon] connected to Chrome CDP; TV page url: {page.url}", file=sys.stderr)
 
 
-def _execute_trade(action: str, ticker: str | None, qty: int) -> dict:
+def _execute_trade(action: str, ticker: str | None, qty: int, sl: float | None = None) -> dict:
     """Run the trade execution under lock to serialize multiple alerts."""
     with _state["lock"]:
         page = _state["page"]
         if page is None:
             return {"error": "no page in session"}
         try:
-            log = tx.execute_signal(page, action, ticker, qty)
+            log = tx.execute_signal(page, action, ticker, qty, sl=sl)
             return log
         except Exception as e:
             return {"error": f"execute_signal failed: {e}"}
@@ -107,9 +107,13 @@ class Handler(BaseHTTPRequestHandler):
         action = body.get("action", "")
         ticker = body.get("ticker")
         qty = int(body.get("qty") or 1)
+        sl = body.get("sl")
+        if sl is not None:
+            try: sl = float(sl)
+            except: sl = None
         if action.lower() not in ("buy", "sell", "long", "short"):
             return self._reply(400, {"error": f"bad action: {action}"})
-        result = _execute_trade(action, ticker, qty)
+        result = _execute_trade(action, ticker, qty, sl=sl)
         self._reply(200, result)
         self.log_message("TRADE %s %s qty=%s → aborted=%s steps=%d",
                          action, ticker, qty,

@@ -179,16 +179,15 @@ def _set_side_via_form(page, side: str) -> dict:
 
 
 def _set_qty_in_form(page, qty: int) -> dict:
-    """Find the qty input (first visible text input in order panel) and set value."""
+    """Find the qty input (top text input in order panel) and set value."""
     js = """(qty) => {
         const inputs = Array.from(document.querySelectorAll('input[type=text]')).filter(e => {
             const r = e.getBoundingClientRect();
-            return r.width > 0 && r.height > 0 && r.y < 350;  // top of form, before TP/SL prices
+            return r.width > 0 && r.height > 0 && r.y < 350;
         });
         if (inputs.length === 0) return {error: 'no qty input found'};
         const input = inputs[0];
         const oldValue = input.value;
-        // Set value via native setter (React-aware)
         const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
         setter.call(input, String(qty));
         input.dispatchEvent(new Event('input', {bubbles: true}));
@@ -198,49 +197,99 @@ def _set_qty_in_form(page, qty: int) -> dict:
     return page.evaluate(js, qty)
 
 
-def _click_submit_once(page, side: str) -> dict:
-    """Single submit of place-and-modify-button at current form state."""
+def _set_sl_in_form(page, sl_price: float) -> dict:
+    """Toggle SL on (if needed) + set SL price. Robust to switch state via retry."""
+    # Step 1: find SL switch (2nd input[role=switch], y > 440)
+    switches = page.locator('input[role="switch"]')
+    if switches.count() < 2:
+        return {"error": "fewer than 2 switches found"}
+    sl_switch = switches.nth(1)
+    # Force click to toggle on (idempotent: if already on, this could turn off — but then we click again to ensure on)
+    # Better: check state via JS, only click if off
+    try:
+        sl_state = page.evaluate("""() => {
+            const s = Array.from(document.querySelectorAll('input[role=switch]'));
+            if (s.length < 2) return null;
+            return s[1].checked;
+        }""")
+        if sl_state is False:
+            sl_switch.click(timeout=2_000, force=True)
+            time.sleep(0.8)  # let React update
+    except Exception as e:
+        return {"error": f"sl toggle failed: {e}"}
+    # Step 2: find SL price input (now editable)
+    # Try up to 3 times with wait
+    for attempt in range(3):
+        result = page.evaluate("""(slPrice) => {
+            // SL price input: !readOnly text input below SL switch (y > 460)
+            const inputs = Array.from(document.querySelectorAll('input[type=text]')).filter(e => {
+                const r = e.getBoundingClientRect();
+                return r.width > 0 && !e.readOnly && r.y > 460;
+            });
+            if (inputs.length === 0) return {error: 'no SL price input editable'};
+            const input = inputs.sort((a, b) => a.getBoundingClientRect().y - b.getBoundingClientRect().y)[0];
+            const before = input.value;
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(input, String(slPrice));
+            input.dispatchEvent(new Event('input', {bubbles: true}));
+            input.dispatchEvent(new Event('change', {bubbles: true}));
+            return {ok: true, before, after: input.value, attempt};
+        }""", sl_price)
+        if "ok" in result:
+            return result
+        time.sleep(0.5)
+    return {"error": "no SL input after 3 retries"}
+
+
+def _click_submit_once(page, side: str, sl: float | None = None) -> dict:
+    """Single submit. Optionally set SL price via bracket toggle before submit."""
     try:
         _ensure_market_mode(page)
     except Exception:
         pass
     _set_side_via_form(page, side)  # best-effort, may error on hidden ribbon
+    sl_result = None
+    if sl is not None and sl > 0:
+        sl_result = _set_sl_in_form(page, sl)
+        time.sleep(0.3)
     submit = page.locator('[data-name="place-and-modify-button"]').first
     if submit.count() == 0:
         return {"error": "place-and-modify-button not in DOM"}
     submit_text = submit.text_content() or ""
     r = _resilient_click(submit, f"{side}-submit")
     if "error" in r:
-        return {"error": r["error"], "submit_text": submit_text[:80]}
-    return {"clicked": side, "submitted": True, "submit_text": submit_text[:80]}
+        return {"error": r["error"], "submit_text": submit_text[:80], "sl_result": sl_result}
+    return {"clicked": side, "submitted": True, "submit_text": submit_text[:80], "sl_result": sl_result}
 
 
-def click_buy(page, qty: int = 1) -> dict:
-    """Place N market BUY orders by clicking submit N times (form qty stays 1 per click)."""
+def click_buy(page, qty: int = 1, sl: float | None = None) -> dict:
+    """Place N market BUY orders. Optionally set bracket SL price on the first fill."""
     results = []
     for i in range(qty):
-        r = _click_submit_once(page, "buy")
+        r = _click_submit_once(page, "buy", sl=sl if i == 0 else None)
         results.append(r)
         if "error" in r:
             return {"error": r["error"], "filled": i, "results": results}
         if i < qty - 1:
-            time.sleep(0.4)  # space submits so TV doesn't dedupe
+            time.sleep(0.4)
     return {"clicked": "buy", "qty_requested": qty, "qty_submitted": qty,
-            "submitted": True, "submit_text": results[-1].get("submit_text", "") if results else ""}
+            "submitted": True, "submit_text": results[-1].get("submit_text", "") if results else "",
+            "sl_result": results[0].get("sl_result") if results else None}
 
 
-def click_sell(page, qty: int = 1) -> dict:
-    """Place N market SELL orders by clicking submit N times."""
+def click_sell(page, qty: int = 1, sl: float | None = None) -> dict:
+    """Place N market SELL orders. Optionally set bracket SL price."""
     results = []
     for i in range(qty):
-        r = _click_submit_once(page, "sell")
+        r = _click_submit_once(page, "sell", sl=sl if i == 0 else None)
         results.append(r)
         if "error" in r:
             return {"error": r["error"], "filled": i, "results": results}
         if i < qty - 1:
             time.sleep(0.4)
     return {"clicked": "sell", "qty_requested": qty, "qty_submitted": qty,
-            "submitted": True, "submit_text": results[-1].get("submit_text", "") if results else ""}
+            "submitted": True, "submit_text": results[-1].get("submit_text", "") if results else "",
+            "sl_result": results[0].get("sl_result") if results else None}
 
 
 def get_account_state(page) -> dict:
@@ -274,7 +323,7 @@ def _chart_symbol_matches(page, ticker: str | None) -> tuple[bool, str]:
     return matches, f"chart={chart_upper} alert={alert_bare}"
 
 
-def execute_signal(page, action: str, ticker: str | None = None, qty: int = 1) -> dict:
+def execute_signal(page, action: str, ticker: str | None = None, qty: int = 1, sl: float | None = None) -> dict:
     """End-to-end: ensure panel + verify tradable + click buy/sell.
 
     If ticker is provided and doesn't match the current chart symbol, aborts
@@ -296,9 +345,9 @@ def execute_signal(page, action: str, ticker: str | None = None, qty: int = 1) -
         log["aborted"] = "not tradable: " + s1.get("panel_msg", "no buy-order-button found")
         return log
     if action.lower() in ("buy", "long"):
-        click = click_buy(page, qty=qty)
+        click = click_buy(page, qty=qty, sl=sl)
     elif action.lower() in ("sell", "short"):
-        click = click_sell(page, qty=qty)
+        click = click_sell(page, qty=qty, sl=sl)
     else:
         log["aborted"] = f"unknown action: {action}"
         return log
