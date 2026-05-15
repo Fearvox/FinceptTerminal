@@ -1,0 +1,338 @@
+// @version=6
+// =====================================================================
+//  FinceptEdge v2 — propfirm-v4 self-authored signal generator (Pine v6)
+// =====================================================================
+//  v2 changes vs v1 (Pine v5):
+//    • Pine v6 header — short-circuit eval, strict bool, expanded
+//      string capacity, log.* functions
+//    • Trade state machine collapsed into a UDT (`Trade`) with methods.
+//      Pine v6 lets methods mutate `self` fields, so we get rid of the
+//      v1 inline-reset hack (10 `:=` repeated 3×)
+//    • Direction via enum (`Dir.LONG / Dir.SHORT / Dir.FLAT`) instead
+//      of magic-string "long"/"short" — typo-proof, switchable
+//    • Diagnostic output to Pine Logs pane via log.info(), gated by
+//      input.bool, replaces the on-chart debug table for ops visibility
+//
+//  Unchanged from v1:
+//    • 2-of-2 confluence gate (HTF EMA bias + ATR-scaled level breakout)
+//    • CVD signal DROPPED on purpose (live tick-volume unreliable)
+//    • Structured SL (swing ± 0.25 ATR), 2R/3R/4R TP ladder
+//    • ATR trail arms at 1R MFE
+//    • Webhook contract: same JSON schema, daemon-compatible
+//      (source="fincept", action=buy/sell, event=sl_hit/tp{1,2,3}_hit)
+//    • Score/TQI formulas — same heuristics, same gate semantics
+// =====================================================================
+
+indicator("FinceptEdge v2 (propfirm-v4)", overlay=true, max_lines_count=20, max_labels_count=50)
+
+// ─────────────── INPUTS ────────────────────────────────────────────
+g_signal  = "Signal Gate"
+g_risk    = "Risk / SL / TP"
+g_session = "Session Filter"
+g_alert   = "Webhook"
+g_debug   = "Debug / Logging"
+
+htf_ema_len      = input.int(50, "HTF EMA length", minval=10, group=g_signal)
+htf_slope_lb     = input.int(5,  "HTF EMA slope lookback (bars)", minval=2, group=g_signal)
+prev_window      = input.int(24, "Prev-session H/L window (bars)", minval=10, group=g_signal,
+                              tooltip="Bars (ending at previous bar) used as the high/low + VWAP reference. 24 on 15m ≈ 6h of structure.")
+atr_len          = input.int(14, "ATR length", minval=5, group=g_signal)
+break_atr_mult   = input.float(0.25, "Breakout threshold (× ATR)", minval=0.05, step=0.05, group=g_signal)
+
+sl_swing_lb      = input.int(10, "SL swing lookback (bars)", minval=3, group=g_risk)
+sl_atr_buffer    = input.float(0.25, "SL buffer beyond swing (× ATR)", minval=0.0, step=0.05, group=g_risk)
+rr_target        = input.float(2.0,  "TP1 R:R multiplier", minval=1.0, step=0.25, group=g_risk)
+rr_target_2      = input.float(3.0,  "TP2 R:R multiplier", minval=1.0, step=0.25, group=g_risk)
+rr_target_3      = input.float(4.0,  "TP3 R:R multiplier", minval=1.0, step=0.25, group=g_risk)
+use_atr_trail    = input.bool(true,  "Use ATR trail after 1R MFE", group=g_risk)
+trail_atr_mult   = input.float(1.5,  "ATR trail multiplier", minval=0.5, step=0.25, group=g_risk)
+
+use_session      = input.bool(true,  "Restrict to London + NY (07–21 UTC)", group=g_session)
+session_str      = input.session("0700-2100", "Session (exchange time)", group=g_session,
+                                  tooltip="07–21 UTC ≈ London open through NY close. Adjust if your TV exchange is off-UTC.")
+
+wh_secret        = input.string("CHANGE_ME_SECRET", "Webhook secret", group=g_alert, confirm=true,
+                                 tooltip="MUST match TV_WEBHOOK_SECRET env var on the daemon.")
+wh_source        = input.string("fincept", "Source tag", group=g_alert,
+                                 tooltip="Identifies this script in trade_journal.setup_reason. Stays distinct from 'smc'/'willy'/'sats'.")
+wh_setup_label   = input.string("fincept_v2_2of2", "Setup label", group=g_alert)
+emit_exit_events = input.bool(true, "Emit sl_hit / tp_hit exit events", group=g_alert,
+                               tooltip="Fires alerts when SL or TP{1,2,3} are touched. Required for daemon to close paper trades.")
+
+plot_signals     = input.bool(true,  "Plot entry markers",        group=g_debug)
+plot_levels      = input.bool(true,  "Plot SL / TP lines",        group=g_debug)
+log_diagnostics  = input.bool(false, "Log signal/score to Pine Logs", group=g_debug,
+                               tooltip="Writes one log.info() per closed bar showing both-signals state + computed score. Open the 'Pine Logs' pane (Object Tree → Logs).")
+
+// ─────────────── TYPES ─────────────────────────────────────────────
+// Direction enum — typo-proof replacement for magic-string sides.
+enum Dir
+    LONG
+    SHORT
+    FLAT
+
+// Trade state machine. Methods can mutate `self` fields in Pine v6,
+// which is how we get rid of the v1 inline-reset boilerplate.
+type Trade
+    float entry      = na
+    float sl         = na
+    float tp1        = na
+    float tp2        = na
+    float tp3        = na
+    Dir   side       = Dir.FLAT
+    bool  tp1_done   = false
+    bool  tp2_done   = false
+    bool  tp3_done   = false
+    bool  trail_armed = false
+
+method is_open(Trade self) =>
+    self.side != Dir.FLAT
+
+method clear(Trade self) =>
+    self.entry      := na
+    self.sl         := na
+    self.tp1        := na
+    self.tp2        := na
+    self.tp3        := na
+    self.side       := Dir.FLAT
+    self.tp1_done   := false
+    self.tp2_done   := false
+    self.tp3_done   := false
+    self.trail_armed := false
+
+method open_at(Trade self, Dir side, float entry, float sl, float tp1, float tp2, float tp3) =>
+    self.entry      := entry
+    self.sl         := sl
+    self.tp1        := tp1
+    self.tp2        := tp2
+    self.tp3        := tp3
+    self.side       := side
+    self.tp1_done   := false
+    self.tp2_done   := false
+    self.tp3_done   := false
+    self.trail_armed := false
+
+// ─────────────── SIGNAL 1: HTF EMA TREND BIAS ──────────────────────
+htf_ema = ta.ema(close, htf_ema_len)
+htf_ema_prev = htf_ema[htf_slope_lb]
+htf_long_bias  = close > htf_ema and htf_ema > htf_ema_prev
+htf_short_bias = close < htf_ema and htf_ema < htf_ema_prev
+
+atr = ta.atr(atr_len)
+htf_strength = atr > 0 ? math.min(math.abs(close - htf_ema) / atr, 3.0) : 0.0
+
+// ─────────────── SIGNAL 2: LEVEL BREAKOUT ──────────────────────────
+prev_h = ta.highest(high[1], prev_window)
+prev_l = ta.lowest(low[1],  prev_window)
+
+vwap_num = math.sum((high[1] + low[1] + close[1]) / 3.0 * nz(volume[1], 1.0), prev_window)
+vwap_den = math.sum(nz(volume[1], 1.0), prev_window)
+roll_vwap = vwap_den > 0 ? vwap_num / vwap_den : close[1]
+
+break_thresh = break_atr_mult * atr
+long_breakout  = (close > prev_h + break_thresh) or (close > roll_vwap + break_thresh)
+short_breakout = (close < prev_l - break_thresh) or (close < roll_vwap - break_thresh)
+
+long_break_mag  = atr > 0 ? math.min(math.max(close - prev_h, close - roll_vwap) / atr, 3.0) : 0.0
+short_break_mag = atr > 0 ? math.min(math.max(prev_l - close, roll_vwap - close) / atr, 3.0) : 0.0
+
+// ─────────────── SESSION GATE ──────────────────────────────────────
+in_session = not use_session or (not na(time(timeframe.period, session_str)))
+
+// ─────────────── ENTRY GATE: 2-of-2 + SESSION + CONFIRMED ──────────
+// Lazy-eval friendly: the cheap checks (booleans) gate the expensive
+// downstream computations. barstate.isconfirmed last so we don't
+// repaint on intra-bar wiggles.
+long_entry  = htf_long_bias  and long_breakout  and in_session and barstate.isconfirmed
+short_entry = htf_short_bias and short_breakout and in_session and barstate.isconfirmed
+
+// ─────────────── SL / TP COMPUTATION (structured) ──────────────────
+swing_low_ref  = ta.lowest(low,  sl_swing_lb)
+swing_high_ref = ta.highest(high, sl_swing_lb)
+
+long_sl_calc  = swing_low_ref  - sl_atr_buffer * atr
+short_sl_calc = swing_high_ref + sl_atr_buffer * atr
+
+long_risk_calc  = long_entry  ? close - long_sl_calc  : 0.0
+short_risk_calc = short_entry ? short_sl_calc - close : 0.0
+
+long_tp1_calc  = long_entry  ? close + rr_target   * long_risk_calc : na
+long_tp2_calc  = long_entry  ? close + rr_target_2 * long_risk_calc : na
+long_tp3_calc  = long_entry  ? close + rr_target_3 * long_risk_calc : na
+
+short_tp1_calc = short_entry ? close - rr_target   * short_risk_calc : na
+short_tp2_calc = short_entry ? close - rr_target_2 * short_risk_calc : na
+short_tp3_calc = short_entry ? close - rr_target_3 * short_risk_calc : na
+
+// Sanity gate — protect against gap candles and silly-tight SLs
+min_risk = 0.25 * atr
+max_risk = 3.0  * atr
+long_sl_sane  = long_entry  and long_risk_calc  >= min_risk and long_risk_calc  <= max_risk
+short_sl_sane = short_entry and short_risk_calc >= min_risk and short_risk_calc <= max_risk
+
+fire_long  = long_sl_sane
+fire_short = short_sl_sane
+
+// ─────────────── QUALITY SCORE & TQI ───────────────────────────────
+// Score: base 30 when firing (passes P5B_MIN_SCORE=30 by construction)
+//        + htf_strength*10 (cap +30) + break_mag*10 (cap +30) + session_bonus 10
+// TQI:   (risk/ATR − 0.25) / 2.0 clipped to [0,1]
+//        ≥0.4 daemon gate auto-filters too-tight SLs (≤1.05 ATR risk)
+bias_score_long  = math.min(htf_strength * 10.0, 30.0) + math.min(long_break_mag  * 10.0, 30.0)
+bias_score_short = math.min(htf_strength * 10.0, 30.0) + math.min(short_break_mag * 10.0, 30.0)
+session_bonus    = use_session ? 10.0 : 0.0
+
+score_long  = fire_long  ? 30.0 + bias_score_long  + session_bonus : 0.0
+score_short = fire_short ? 30.0 + bias_score_short + session_bonus : 0.0
+
+tqi_long  = fire_long  and atr > 0 ? math.max(math.min((long_risk_calc  / atr - 0.25) / 2.0, 1.0), 0.0) : 0.0
+tqi_short = fire_short and atr > 0 ? math.max(math.min((short_risk_calc / atr - 0.25) / 2.0, 1.0), 0.0) : 0.0
+
+// ─────────────── TRADE STATE — single UDT instance ─────────────────
+var Trade trade = Trade.new()
+
+// New entries (priority: long signals first if both fire same bar —
+// unlikely with our gate but deterministic)
+if fire_long
+    trade.open_at(Dir.LONG, close, long_sl_calc, long_tp1_calc, long_tp2_calc, long_tp3_calc)
+else if fire_short
+    trade.open_at(Dir.SHORT, close, short_sl_calc, short_tp1_calc, short_tp2_calc, short_tp3_calc)
+
+// Exit detection: bar-local flags, set if price touched the levels
+// during this bar. ATR trail ratchets SL on the live (open) trade.
+sl_hit  = false
+tp1_hit = false
+tp2_hit = false
+tp3_hit = false
+exit_price = float(na)
+
+if trade.is_open()
+    if trade.side == Dir.LONG
+        risk_now = trade.entry - trade.sl
+        mfe_now  = high - trade.entry
+        if use_atr_trail and not trade.trail_armed and mfe_now >= risk_now
+            trade.trail_armed := true
+        if trade.trail_armed
+            trail_new = close - trail_atr_mult * atr
+            trade.sl := math.max(trade.sl, trail_new)
+        if low <= trade.sl
+            sl_hit := true
+            exit_price := trade.sl
+        if not trade.tp1_done and high >= trade.tp1
+            trade.tp1_done := true
+            tp1_hit := true
+        if not trade.tp2_done and high >= trade.tp2
+            trade.tp2_done := true
+            tp2_hit := true
+        if not trade.tp3_done and high >= trade.tp3
+            trade.tp3_done := true
+            tp3_hit := true
+    else if trade.side == Dir.SHORT
+        risk_now = trade.sl - trade.entry
+        mfe_now  = trade.entry - low
+        if use_atr_trail and not trade.trail_armed and mfe_now >= risk_now
+            trade.trail_armed := true
+        if trade.trail_armed
+            trail_new = close + trail_atr_mult * atr
+            trade.sl := math.min(trade.sl, trail_new)
+        if high >= trade.sl
+            sl_hit := true
+            exit_price := trade.sl
+        if not trade.tp1_done and low <= trade.tp1
+            trade.tp1_done := true
+            tp1_hit := true
+        if not trade.tp2_done and low <= trade.tp2
+            trade.tp2_done := true
+            tp2_hit := true
+        if not trade.tp3_done and low <= trade.tp3
+            trade.tp3_done := true
+            tp3_hit := true
+
+// NB: trade.clear() is deferred until after the alert section below,
+// so a same-bar SL + TP touch (gap candle) still gets correct prices
+// in the tp_hit exit payload.
+
+// ─────────────── WEBHOOK PAYLOAD BUILDERS ──────────────────────────
+fmt_p(float x) => str.tostring(x, "#.#######")
+fmt_2(float x) => str.tostring(x, "#.##")
+
+build_entry(string action, float price, float sl, float tp1, float tp2, float tp3, float score, float tqi) =>
+    '{"secret":"' + wh_secret +
+      '","action":"' + action +
+      '","ticker":"' + syminfo.ticker +
+      '","price":' + fmt_p(price) +
+      ',"sl":'   + fmt_p(sl) +
+      ',"tp1":'  + fmt_p(tp1) +
+      ',"tp2":'  + fmt_p(tp2) +
+      ',"tp3":'  + fmt_p(tp3) +
+      ',"score":' + fmt_2(score) +
+      ',"tqi":'   + fmt_2(tqi) +
+      ',"tp_mode":"fixed"' +
+      ',"tp_scale":1.00' +
+      ',"source":"' + wh_source + '"' +
+      ',"setup":"'  + wh_setup_label + '"' +
+      ',"timeframe":"' + timeframe.period + '"' +
+      ',"ts_utc":"' + str.format_time(time, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") + '"' +
+      '}'
+
+build_exit(string event, float price) =>
+    '{"secret":"' + wh_secret +
+      '","event":"' + event +
+      '","ticker":"' + syminfo.ticker +
+      '","price":' + fmt_p(price) +
+      ',"source":"' + wh_source + '"' +
+      ',"ts_utc":"' + str.format_time(time, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") + '"' +
+      '}'
+
+// ─────────────── ALERT EMISSIONS ───────────────────────────────────
+if fire_long
+    alert(build_entry("buy",  close, long_sl_calc,  long_tp1_calc,  long_tp2_calc,  long_tp3_calc,  score_long,  tqi_long),  alert.freq_once_per_bar_close)
+
+if fire_short
+    alert(build_entry("sell", close, short_sl_calc, short_tp1_calc, short_tp2_calc, short_tp3_calc, score_short, tqi_short), alert.freq_once_per_bar_close)
+
+if emit_exit_events
+    if sl_hit
+        alert(build_exit("sl_hit",  exit_price),     alert.freq_once_per_bar)
+    if tp1_hit
+        alert(build_exit("tp1_hit", trade.tp1),      alert.freq_once_per_bar)
+    if tp2_hit
+        alert(build_exit("tp2_hit", trade.tp2),      alert.freq_once_per_bar)
+    if tp3_hit
+        alert(build_exit("tp3_hit", trade.tp3),      alert.freq_once_per_bar)
+
+// Deferred state reset — see note in exit-detection block.
+if sl_hit
+    trade.clear()
+
+// ─────────────── DIAGNOSTIC LOGGING (Pine Logs pane) ───────────────
+// Cheap to compute, helps with live tuning. Off by default — flip
+// `log_diagnostics` on while you're sanity-checking score/tqi
+// distributions, then back off so the log doesn't fill up.
+if log_diagnostics and barstate.isconfirmed
+    if fire_long
+        log.info("LONG  entry=" + fmt_p(close) + " sl=" + fmt_p(long_sl_calc) +
+                 " risk=" + fmt_p(long_risk_calc) +
+                 " score=" + fmt_2(score_long) + " tqi=" + fmt_2(tqi_long) +
+                 " htf_str=" + fmt_2(htf_strength) + " brk_mag=" + fmt_2(long_break_mag))
+    if fire_short
+        log.info("SHORT entry=" + fmt_p(close) + " sl=" + fmt_p(short_sl_calc) +
+                 " risk=" + fmt_p(short_risk_calc) +
+                 " score=" + fmt_2(score_short) + " tqi=" + fmt_2(tqi_short) +
+                 " htf_str=" + fmt_2(htf_strength) + " brk_mag=" + fmt_2(short_break_mag))
+    if sl_hit
+        log.warning("SL_HIT side=" + str.tostring(trade.side) + " px=" + fmt_p(exit_price))
+    if tp1_hit
+        log.info("TP1_HIT  side=" + str.tostring(trade.side) + " px=" + fmt_p(trade.tp1))
+
+// ─────────────── PLOTTING ──────────────────────────────────────────
+plot(htf_ema, "HTF EMA", color=color.new(color.orange, 30), linewidth=1)
+
+plot(plot_levels and trade.is_open() ? trade.entry : na, "Entry", color=color.new(color.white,  0), style=plot.style_linebr, linewidth=1)
+plot(plot_levels and trade.is_open() ? trade.sl    : na, "SL",    color=color.new(color.red,    0), style=plot.style_linebr, linewidth=1)
+plot(plot_levels and trade.is_open() ? trade.tp1   : na, "TP1",   color=color.new(color.lime,   0), style=plot.style_linebr, linewidth=1)
+plot(plot_levels and trade.is_open() ? trade.tp2   : na, "TP2",   color=color.new(color.green, 30), style=plot.style_linebr, linewidth=1)
+plot(plot_levels and trade.is_open() ? trade.tp3   : na, "TP3",   color=color.new(color.green, 60), style=plot.style_linebr, linewidth=1)
+
+plotshape(plot_signals and fire_long,  title="Long",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(plot_signals and fire_short, title="Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,  0), size=size.small)
