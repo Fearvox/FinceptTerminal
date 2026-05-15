@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.fincept.p5b-webhook</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/0xvox/Documents/GitHub/FinceptTerminal/fincept-qt/scripts/data_algo/propfirm_engine/services/run_tv_webhook.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/p5b_webhook.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/p5b_webhook.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/0xvox/Documents/GitHub/FinceptTerminal/fincept-qt/scripts/data_algo</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>P5B_AUTOEXEC_ENABLED</key>
+        <string>1</string>
+        <key>P5B_MIN_SCORE</key>
+        <string>30</string>
+        <key>P5B_MIN_TQI</key>
+        <string>0.4</string>
+    </dict>
+</dict>
+</plist>
