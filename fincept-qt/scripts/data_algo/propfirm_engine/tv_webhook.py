@@ -93,13 +93,66 @@ def _close_trade(db: str, trade_id: int, exit_price: float,
             pnl_pct = (exit_price / entry - 1) * 100
         else:
             pnl_pct = (1 - exit_price / entry) * 100
-        conn.execute("""
+        # Idempotency: only update if still open. Prevents the sweep from
+        # accidentally overwriting an exit that was just written by a real
+        # event=sl_hit / tp_hit alert.
+        cur = conn.execute("""
             UPDATE trades SET exit_price=?, exit_ts=?, exit_reason=?, pnl_pct=?
-            WHERE id=?
+            WHERE id=? AND exit_ts IS NULL
         """, (exit_price, exit_ts, reason, pnl_pct, trade_id))
         conn.commit()
+        if cur.rowcount == 0:
+            return {"id": trade_id, "already_closed": True}
     return {"id": trade_id, "exit_price": exit_price, "exit_ts": exit_ts,
             "exit_reason": reason, "pnl_pct": pnl_pct}
+
+
+def _sweep_open_trades_at_price(db: str, ticker: str, current_price: float,
+                                 trigger_ts: str | None = None) -> list[dict]:
+    """For every open trade on `ticker`, close if current_price breached SL/TP.
+
+    This is the catch-all exit mechanism for Pine scripts that don't emit
+    their own event=sl_hit / event=tp{1,2,3}_hit alerts (Willy + SMC, as of
+    2026-05-15). Cadence = "once per inbound alert on this ticker", which
+    on a 1m chart is ~one check per minute per active symbol.
+
+    Limitations:
+      • Uses current_price as a single tick — cannot detect intra-bar wicks
+        that touched SL/TP and then recovered. The miss is conservative
+        (we under-count SL hits), which biases comparison toward willy/smc
+        looking better than reality. Sample size + many ticks per symbol
+        smooths this.
+      • Only matches exact symbol string — "SOLUSDC.P" and
+        "COINBASE:SOLUSDC.P" are treated as distinct instruments because
+        that's how each Pine source labels them.
+    """
+    closes: list[dict] = []
+    with connect(db) as conn:
+        rows = conn.execute("""
+            SELECT id, side, sl, tp FROM trades
+            WHERE symbol = ? AND exit_ts IS NULL
+        """, (ticker.upper(),)).fetchall()
+    for row in rows:
+        sl, tp = row["sl"], row["tp"]
+        if sl is None and tp is None:
+            continue
+        hit_reason = None
+        hit_price = None
+        if row["side"] == "long":
+            if sl is not None and current_price <= sl:
+                hit_reason, hit_price = "sl", sl
+            elif tp is not None and current_price >= tp:
+                hit_reason, hit_price = "tp", tp
+        else:  # short
+            if sl is not None and current_price >= sl:
+                hit_reason, hit_price = "sl", sl
+            elif tp is not None and current_price <= tp:
+                hit_reason, hit_price = "tp", tp
+        if hit_reason:
+            result = _close_trade(db, row["id"], hit_price, hit_reason, exit_ts=trigger_ts)
+            if not result.get("already_closed"):
+                closes.append(result)
+    return closes
 
 
 def _setup_reason_from_entry(p: dict) -> str:
@@ -249,6 +302,25 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             self.log_message("REJECT entry-bad-action %s", action)
             self._reply(400, {"error": f"action must be one of {sorted(VALID_ACTIONS)}"})
             return
+
+        # Inline tick-based exit sweep — every incoming alert acts as a
+        # price tick for any open trade on the same ticker. Closes those
+        # whose SL/TP has been breached by this alert's price. See
+        # _sweep_open_trades_at_price docstring for caveats.
+        try:
+            swept = _sweep_open_trades_at_price(
+                self.db_path,
+                str(p["ticker"]),
+                float(p["price"]),
+            )
+            for c in swept:
+                self.log_message(
+                    "INLINE_EXIT #%s reason=%s exit=%s pnl=%.2f%% (triggered by %s alert on %s)",
+                    c["id"], c["exit_reason"], c["exit_price"],
+                    c["pnl_pct"], p.get("source") or "willy", p["ticker"],
+                )
+        except (ValueError, KeyError, TypeError):
+            pass  # never let sweep failure block the new entry
 
         side = "long" if action == "buy" else "short"
         try:
