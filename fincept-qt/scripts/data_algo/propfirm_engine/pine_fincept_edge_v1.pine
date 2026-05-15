@@ -1,0 +1,336 @@
+// @version=5
+// =====================================================================
+//  FinceptEdge v1 — propfirm-v4 self-authored signal generator
+// =====================================================================
+//  Built from the same 2-of-2 confluence gate validated in our Phase 3.1
+//  backtest (confluence_scorer.py), encoded directly in Pine so the
+//  live signal already meets our spec before it touches the webhook.
+//
+//  No LuxAlgo / Willy dependency. No CVD (unreliable on live tick
+//  volume, dropped per Risk C of the engine spec). 2-of-2 gate uses:
+//
+//    1. HTF EMA trend bias  — close vs EMA(50) + slope agreement
+//    2. Level breakout      — close beyond prev-session H/L or VWAP
+//                             by ≥ 0.25 × ATR in the intended direction
+//
+//  SL  = swing high/low ± 0.25 × ATR  (structured, per the
+//        SL-at-S/R-±$1 tagging incident we already paid tuition for)
+//  TP1 = entry ± (entry−SL distance) × 2.0  (1:2 R:R, matches daemon
+//        SMC synth default so behavior is predictable)
+//  Trail = optional ATR trail once 1R MFE achieved (cap upside drawback)
+//
+//  Quality score & TQI are computed in-Pine so the daemon's
+//  P5B_MIN_SCORE / P5B_MIN_TQI filter has real data to gate on — these
+//  are NOT cosmetic. See score / tqi blocks below for the formula.
+//
+//  Webhook contract: matches tv_webhook.py entry/exit schemas.
+//    Entry: action, ticker, price, sl, tp1, tp2, tp3, score, tqi,
+//           tp_mode=fixed, source=fincept, setup, regime, ts_utc
+//    Exit:  event=sl_hit|tp1_hit|tp2_hit|tp3_hit, ticker, price
+// =====================================================================
+
+indicator("FinceptEdge v1 (propfirm-v4)", overlay=true, max_lines_count=20, max_labels_count=50)
+
+// ─────────────── INPUTS ────────────────────────────────────────────
+g_signal  = "Signal Gate"
+g_risk    = "Risk / SL / TP"
+g_session = "Session Filter"
+g_alert   = "Webhook"
+g_debug   = "Debug / Plot"
+
+htf_ema_len      = input.int(50, "HTF EMA length", minval=10, group=g_signal)
+htf_slope_lb     = input.int(5,  "HTF EMA slope lookback (bars)", minval=2, group=g_signal)
+prev_window      = input.int(24, "Prev-session H/L window (bars)", minval=10, group=g_signal,
+                              tooltip="Window of bars (ending previous bar) used as the high/low reference. 24 on a 15m chart ≈ 6h of structure.")
+atr_len          = input.int(14, "ATR length", minval=5, group=g_signal)
+break_atr_mult   = input.float(0.25, "Breakout threshold (× ATR)", minval=0.05, step=0.05, group=g_signal)
+
+sl_swing_lb      = input.int(10, "SL swing lookback (bars)", minval=3, group=g_risk)
+sl_atr_buffer    = input.float(0.25, "SL buffer beyond swing (× ATR)", minval=0.0, step=0.05, group=g_risk)
+rr_target        = input.float(2.0,  "TP1 R:R multiplier", minval=1.0, step=0.25, group=g_risk)
+rr_target_2      = input.float(3.0,  "TP2 R:R multiplier (optional)", minval=1.0, step=0.25, group=g_risk)
+rr_target_3      = input.float(4.0,  "TP3 R:R multiplier (optional)", minval=1.0, step=0.25, group=g_risk)
+use_atr_trail    = input.bool(true,  "Use ATR trail after 1R MFE", group=g_risk)
+trail_atr_mult   = input.float(1.5,  "ATR trail multiplier", minval=0.5, step=0.25, group=g_risk)
+
+use_session      = input.bool(true,  "Restrict to London + NY (07–21 UTC)", group=g_session)
+session_str      = input.session("0700-2100", "Session (exchange time)", group=g_session,
+                                  tooltip="Default 07:00–21:00 covers London open through NY close in UTC. Adjust if your TV exchange is on a different TZ.")
+
+wh_secret        = input.string("CHANGE_ME_SECRET", "Webhook secret", group=g_alert, confirm=true,
+                                 tooltip="MUST match TV_WEBHOOK_SECRET env var on the daemon side.")
+wh_source        = input.string("fincept", "Source tag", group=g_alert,
+                                 tooltip="Identifies this script in trade_journal.setup_reason. Stays distinct from 'smc' / 'willy' / 'sats'.")
+wh_setup_label   = input.string("fincept_v1_2of2", "Setup label", group=g_alert)
+emit_exit_events = input.bool(true, "Emit sl_hit / tp_hit exit events", group=g_alert,
+                               tooltip="Also fires alerts when SL or TP1/2/3 are touched intrabar. Required for the daemon to close paper trades.")
+
+plot_signals     = input.bool(true, "Plot entry markers", group=g_debug)
+plot_levels      = input.bool(true, "Plot SL / TP lines for last entry", group=g_debug)
+debug_table      = input.bool(false, "Show signal-state table", group=g_debug)
+
+// ─────────────── SIGNAL 1: HTF EMA TREND BIAS ──────────────────────
+htf_ema = ta.ema(close, htf_ema_len)
+htf_ema_prev = htf_ema[htf_slope_lb]
+htf_long_bias  = close > htf_ema and htf_ema > htf_ema_prev
+htf_short_bias = close < htf_ema and htf_ema < htf_ema_prev
+
+// HTF bias strength: |close − EMA| / ATR (capped at 3.0)
+atr = ta.atr(atr_len)
+htf_strength = atr > 0 ? math.min(math.abs(close - htf_ema) / atr, 3.0) : 0.0
+
+// ─────────────── SIGNAL 2: LEVEL BREAKOUT ──────────────────────────
+// Prev-session H/L = max/min over [i - prev_window, i - 1]
+prev_h = ta.highest(high[1], prev_window)
+prev_l = ta.lowest(low[1],  prev_window)
+
+// Rolling VWAP over same window (using prior bar to avoid lookahead)
+vwap_num = math.sum((high[1] + low[1] + close[1]) / 3.0 * nz(volume[1], 1.0), prev_window)
+vwap_den = math.sum(nz(volume[1], 1.0), prev_window)
+roll_vwap = vwap_den > 0 ? vwap_num / vwap_den : close[1]
+
+break_thresh = break_atr_mult * atr
+long_breakout  = (close > prev_h + break_thresh) or (close > roll_vwap + break_thresh)
+short_breakout = (close < prev_l - break_thresh) or (close < roll_vwap - break_thresh)
+
+// Breakout strength: how far past the level (in ATR multiples), capped at 3
+long_break_mag  = atr > 0 ? math.min(math.max(close - prev_h, close - roll_vwap) / atr, 3.0) : 0.0
+short_break_mag = atr > 0 ? math.min(math.max(prev_l - close, roll_vwap - close) / atr, 3.0) : 0.0
+
+// ─────────────── SESSION GATE ──────────────────────────────────────
+in_session = not use_session or (not na(time(timeframe.period, session_str)))
+
+// ─────────────── ENTRY GATE: 2-of-2 + SESSION ──────────────────────
+long_entry  = htf_long_bias  and long_breakout  and in_session and barstate.isconfirmed
+short_entry = htf_short_bias and short_breakout and in_session and barstate.isconfirmed
+
+// ─────────────── SL / TP COMPUTATION (structured) ──────────────────
+swing_low_ref  = ta.lowest(low,  sl_swing_lb)
+swing_high_ref = ta.highest(high, sl_swing_lb)
+
+long_sl  = swing_low_ref  - sl_atr_buffer * atr
+short_sl = swing_high_ref + sl_atr_buffer * atr
+
+long_risk  = long_entry  ? close - long_sl  : na
+short_risk = short_entry ? short_sl - close : na
+
+long_tp1  = long_entry  ? close + rr_target   * long_risk : na
+long_tp2  = long_entry  ? close + rr_target_2 * long_risk : na
+long_tp3  = long_entry  ? close + rr_target_3 * long_risk : na
+
+short_tp1 = short_entry ? close - rr_target   * short_risk : na
+short_tp2 = short_entry ? close - rr_target_2 * short_risk : na
+short_tp3 = short_entry ? close - rr_target_3 * short_risk : na
+
+// Sanity: only fire if SL gives meaningful room (≥ 0.25 ATR) AND
+// risk isn't crazy (≤ 3 ATR — protects against gap candles).
+min_risk = 0.25 * atr
+max_risk = 3.0  * atr
+long_sl_sane  = long_entry  and not na(long_risk)  and long_risk  >= min_risk and long_risk  <= max_risk
+short_sl_sane = short_entry and not na(short_risk) and short_risk >= min_risk and short_risk <= max_risk
+
+fire_long  = long_sl_sane
+fire_short = short_sl_sane
+
+// ─────────────── QUALITY SCORE & TQI ───────────────────────────────
+// Score scale: aim 30–80 typical, ≥30 always when we fire (so we pass
+// the daemon's P5B_MIN_SCORE=30 gate by construction).
+//
+//   base 30 (both signals agree + sane SL)
+// + htf_strength * 10  (cap +30)
+// + break_mag * 10     (cap +30)
+// + 10 if in session   (vs not-restricted)
+// → typical range 30–80
+
+bias_score_long  = math.min(htf_strength * 10.0, 30.0) + math.min(long_break_mag  * 10.0, 30.0)
+bias_score_short = math.min(htf_strength * 10.0, 30.0) + math.min(short_break_mag * 10.0, 30.0)
+session_bonus = use_session ? 10.0 : 0.0
+
+score_long  = fire_long  ? 30.0 + bias_score_long  + session_bonus : 0.0
+score_short = fire_short ? 30.0 + bias_score_short + session_bonus : 0.0
+
+// TQI: Trade Quality Index, 0.0–1.0. Proxy for "clean structure":
+// how much head-room the SL gives in ATR multiples, normalized.
+//   tqi = clip( (risk / ATR − 0.25) / 2.0, 0.0, 1.0 )
+// A 0.25 ATR SL → tqi 0.0, 2.25 ATR SL → tqi 1.0. We want enough
+// room that random noise won't tag us, but not so much that R:R
+// becomes lottery-shaped.
+tqi_long  = fire_long  and atr > 0 ? math.max(math.min((long_risk  / atr - 0.25) / 2.0, 1.0), 0.0) : 0.0
+tqi_short = fire_short and atr > 0 ? math.max(math.min((short_risk / atr - 0.25) / 2.0, 1.0), 0.0) : 0.0
+
+// ─────────────── TRADE-STATE TRACKING (for exit alerts + trail) ────
+var float open_entry  = na
+var float open_sl     = na
+var float open_tp1    = na
+var float open_tp2    = na
+var float open_tp3    = na
+var string open_side  = na   // "long" / "short"
+var bool   tp1_done   = false
+var bool   tp2_done   = false
+var bool   tp3_done   = false
+var bool   trail_armed = false  // becomes true after 1R MFE
+
+reset_state() =>
+    open_entry := na
+    open_sl    := na
+    open_tp1   := na
+    open_tp2   := na
+    open_tp3   := na
+    open_side  := na
+    tp1_done   := false
+    tp2_done   := false
+    tp3_done   := false
+    trail_armed := false
+
+// Open new long
+if fire_long
+    reset_state()
+    open_entry := close
+    open_sl    := long_sl
+    open_tp1   := long_tp1
+    open_tp2   := long_tp2
+    open_tp3   := long_tp3
+    open_side  := "long"
+
+// Open new short
+if fire_short
+    reset_state()
+    open_entry := close
+    open_sl    := short_sl
+    open_tp1   := short_tp1
+    open_tp2   := short_tp2
+    open_tp3   := short_tp3
+    open_side  := "short"
+
+// ATR trail: arm after 1R MFE, then ratchet SL toward price
+sl_hit  = false
+tp1_hit = false
+tp2_hit = false
+tp3_hit = false
+exit_price = na
+
+if not na(open_side)
+    if open_side == "long"
+        risk = open_entry - open_sl
+        mfe  = high - open_entry
+        if use_atr_trail and not trail_armed and mfe >= risk
+            trail_armed := true
+        if trail_armed
+            new_sl = close - trail_atr_mult * atr
+            open_sl := math.max(open_sl, new_sl)  // ratchet only upward
+        // SL touch?
+        if low <= open_sl
+            sl_hit := true
+            exit_price := open_sl
+        // TP touches (only fire each milestone once)
+        if not tp1_done and high >= open_tp1
+            tp1_done := true
+            tp1_hit := true
+        if not tp2_done and high >= open_tp2
+            tp2_done := true
+            tp2_hit := true
+        if not tp3_done and high >= open_tp3
+            tp3_done := true
+            tp3_hit := true
+    if open_side == "short"
+        risk = open_sl - open_entry
+        mfe  = open_entry - low
+        if use_atr_trail and not trail_armed and mfe >= risk
+            trail_armed := true
+        if trail_armed
+            new_sl = close + trail_atr_mult * atr
+            open_sl := math.min(open_sl, new_sl)  // ratchet only downward
+        if high >= open_sl
+            sl_hit := true
+            exit_price := open_sl
+        if not tp1_done and low <= open_tp1
+            tp1_done := true
+            tp1_hit := true
+        if not tp2_done and low <= open_tp2
+            tp2_done := true
+            tp2_hit := true
+        if not tp3_done and low <= open_tp3
+            tp3_done := true
+            tp3_hit := true
+
+// Close state on SL hit
+if sl_hit
+    reset_state()
+
+// ─────────────── WEBHOOK PAYLOAD BUILDERS ──────────────────────────
+fmt_p(x) => str.tostring(x, "#.#######")
+fmt_2(x) => str.tostring(x, "#.##")
+ts_now = str.format_time(time, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC")
+
+build_entry(action, price, sl, tp1, tp2, tp3, score, tqi) =>
+    '{"secret":"' + wh_secret +
+      '","action":"' + action +
+      '","ticker":"' + syminfo.ticker +
+      '","price":' + fmt_p(price) +
+      ',"sl":'   + fmt_p(sl) +
+      ',"tp1":'  + fmt_p(tp1) +
+      ',"tp2":'  + fmt_p(tp2) +
+      ',"tp3":'  + fmt_p(tp3) +
+      ',"score":' + fmt_2(score) +
+      ',"tqi":'   + fmt_2(tqi) +
+      ',"tp_mode":"fixed"' +
+      ',"tp_scale":1.00' +
+      ',"source":"' + wh_source + '"' +
+      ',"setup":"'  + wh_setup_label + '"' +
+      ',"timeframe":"' + timeframe.period + '"' +
+      ',"ts_utc":"' + ts_now + '"' +
+      '}'
+
+build_exit(event, price) =>
+    '{"secret":"' + wh_secret +
+      '","event":"' + event +
+      '","ticker":"' + syminfo.ticker +
+      '","price":' + fmt_p(price) +
+      ',"source":"' + wh_source + '"' +
+      ',"ts_utc":"' + ts_now + '"' +
+      '}'
+
+// ─────────────── ALERT EMISSIONS ───────────────────────────────────
+if fire_long
+    alert(build_entry("buy",  close, long_sl,  long_tp1,  long_tp2,  long_tp3,  score_long,  tqi_long),  alert.freq_once_per_bar_close)
+
+if fire_short
+    alert(build_entry("sell", close, short_sl, short_tp1, short_tp2, short_tp3, score_short, tqi_short), alert.freq_once_per_bar_close)
+
+if emit_exit_events
+    if sl_hit
+        alert(build_exit("sl_hit",  exit_price), alert.freq_once_per_bar)
+    if tp1_hit
+        alert(build_exit("tp1_hit", open_tp1),   alert.freq_once_per_bar)
+    if tp2_hit
+        alert(build_exit("tp2_hit", open_tp2),   alert.freq_once_per_bar)
+    if tp3_hit
+        alert(build_exit("tp3_hit", open_tp3),   alert.freq_once_per_bar)
+
+// ─────────────── PLOTTING ──────────────────────────────────────────
+plot(htf_ema, "HTF EMA", color=color.new(color.orange, 30), linewidth=1)
+plot(plot_levels and not na(open_entry) ? open_entry : na, "Entry", color=color.new(color.white,  0), style=plot.style_linebr, linewidth=1)
+plot(plot_levels and not na(open_sl)    ? open_sl    : na, "SL",    color=color.new(color.red,    0), style=plot.style_linebr, linewidth=1)
+plot(plot_levels and not na(open_tp1)   ? open_tp1   : na, "TP1",   color=color.new(color.lime,   0), style=plot.style_linebr, linewidth=1)
+plot(plot_levels and not na(open_tp2)   ? open_tp2   : na, "TP2",   color=color.new(color.green, 30), style=plot.style_linebr, linewidth=1)
+plot(plot_levels and not na(open_tp3)   ? open_tp3   : na, "TP3",   color=color.new(color.green, 60), style=plot.style_linebr, linewidth=1)
+
+plotshape(plot_signals and fire_long,  title="Long",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(plot_signals and fire_short, title="Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,  0), size=size.small)
+
+if debug_table and barstate.islast
+    var table t = table.new(position.top_right, 2, 7, border_width=1)
+    table.cell(t, 0, 0, "Signal",         bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(t, 1, 0, "State",          bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(t, 0, 1, "HTF long bias",  text_color=color.white)
+    table.cell(t, 1, 1, htf_long_bias ? "YES" : "—", text_color=htf_long_bias ? color.lime : color.gray)
+    table.cell(t, 0, 2, "HTF short bias", text_color=color.white)
+    table.cell(t, 1, 2, htf_short_bias ? "YES" : "—", text_color=htf_short_bias ? color.red : color.gray)
+    table.cell(t, 0, 3, "Long breakout",  text_color=color.white)
+    table.cell(t, 1, 3, long_breakout ? "YES" : "—", text_color=long_breakout ? color.lime : color.gray)
+    table.cell(t, 0, 4, "Short breakout", text_color=color.white)
+    table.cell(t, 1, 4, short_breakout ? "YES" : "—", text_color=short_breakout ? color.red : color.gray)
+    table.cell(t, 0, 5, "In session",     text_color=color.white)
+    table.cell(t, 1, 5, in_session ? "YES" : "—", text_color=in_session ? color.lime : color.gray)
+    table.cell(t, 0, 6, "Open side",      text_color=color.white)
+    table.cell(t, 1, 6, na(open_side) ? "flat" : open_side, text_color=na(open_side) ? color.gray : color.yellow)
