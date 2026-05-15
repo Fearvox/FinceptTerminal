@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import sys
 import sqlite3
 from datetime import datetime, timezone
@@ -50,6 +51,33 @@ from urllib.parse import parse_qs, urlparse
 from .log_tv_trade import open_trade
 from . import notify_signal
 from .trade_journal import DEFAULT_DB_PATH, connect
+
+# Auto-exec dispatcher (opencli path) — orthogonal to the :5556 playwright daemon.
+# Lazily initialized on first entry alert so a broken auto_exec import doesn't
+# block webhook startup. Env knobs:
+#   AUTOEXEC_DRY_RUN   default "1" (no clicks). Flip to "0" for live.
+#   AUTOEXEC_SOURCES   default "fincept". CSV.
+_AUTOEXEC_DISPATCHER: Any = None
+
+
+def _get_autoexec_dispatcher() -> Any:
+    global _AUTOEXEC_DISPATCHER
+    if _AUTOEXEC_DISPATCHER is None:
+        from .auto_exec import dispatcher as _disp_mod
+        from .auto_exec import safety as _safety_mod
+        from .auto_exec import policies as _policies_mod
+        log_dir = pathlib.Path(__file__).parent / "auto_exec" / ".logs"
+        sources_env = os.environ.get("AUTOEXEC_SOURCES", "fincept").strip()
+        source_allowlist = [s.strip().lower() for s in sources_env.split(",") if s.strip()]
+        _AUTOEXEC_DISPATCHER = _disp_mod.AutoExecDispatcher(
+            dry_run=os.environ.get("AUTOEXEC_DRY_RUN", "1") != "0",
+            source_allowlist=source_allowlist,
+            safety=_safety_mod.build_default_safety_rails(),
+            policies=_policies_mod.SourcePolicies(),
+            log_dir=log_dir,
+            kill_switch_file=log_dir / ".kill_switch",
+        )
+    return _AUTOEXEC_DISPATCHER
 
 
 ENTRY_REQUIRED = ("action", "ticker", "price", "sl", "tp1")
@@ -429,6 +457,38 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             elif not _quality_ok:
                 self.log_message("DAEMON_TRADE_QUALITY_GATED #%s score=%s tqi=%s (need>=%s/%s)",
                                  row["id"], _signal_score, _signal_tqi, _min_score, _min_tqi)
+
+        # Auto-exec dispatcher (opencli path) — separate channel from the
+        # :5556 playwright daemon above. Decides via SourcePolicies + SafetyRails;
+        # in dry-run mode (default) just logs to dispatches.jsonl, no clicks.
+        try:
+            _ax_payload = {
+                "action": action,
+                "ticker": row["symbol"],
+                "price": float(row["entry_price"]),
+                "source": str(p.get("source") or "willy").lower(),
+                "score": float(p.get("score") or 0),
+                "tqi": float(p.get("tqi") or 0),
+                "leverage": int(p.get("leverage") or 10),
+                "sl_price": float(p.get("sl") or row["sl"]) if (p.get("sl") or row["sl"]) else None,
+                "tp1_price": float(p.get("tp1") or row["tp"]) if (p.get("tp1") or row["tp"]) else None,
+            }
+            _ax_result = _get_autoexec_dispatcher().on_entry_alert(_ax_payload)
+            if _ax_result.get("dispatched"):
+                self.log_message(
+                    "AUTOEXEC #%s %s qty=%s reason=%s",
+                    row["id"],
+                    "DRY" if _ax_result.get("dry_run") else "LIVE",
+                    _ax_result.get("qty"),
+                    _ax_result.get("reason"),
+                )
+            else:
+                self.log_message(
+                    "AUTOEXEC_BLOCKED #%s reason=%s",
+                    row["id"], _ax_result.get("reason"),
+                )
+        except Exception as _ax_err:  # never let auto-exec break the webhook
+            self.log_message("AUTOEXEC_ERROR #%s: %s", row["id"], _ax_err)
 
     def _handle_exit(self, p: dict):
         missing = [k for k in EXIT_REQUIRED if k not in p]
