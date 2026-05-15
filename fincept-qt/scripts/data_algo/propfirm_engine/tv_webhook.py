@@ -69,14 +69,25 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _find_open_trade_for_ticker(db: str, ticker: str) -> dict | None:
-    """Return the most recent open (exit_ts IS NULL) row for this ticker."""
+def _find_open_trade_for_ticker(db: str, ticker: str,
+                                source_prefix: str | None = None) -> dict | None:
+    """Return the most recent open (exit_ts IS NULL) row for this ticker.
+
+    If `source_prefix` is given (e.g. "fincept"), only trades whose
+    setup_reason starts with `<source>_` match. This prevents an exit
+    alert from source X (e.g. fincept sl_hit) from accidentally closing
+    a trade from source Y (e.g. willy) just because they're on the same
+    ticker. Without this filter, sources that emit explicit exit events
+    silently corrupt other sources' open positions.
+    """
+    sql = "SELECT * FROM trades WHERE symbol = ? AND exit_ts IS NULL"
+    args: list = [ticker.upper()]
+    if source_prefix:
+        sql += " AND setup_reason LIKE ?"
+        args.append(f"{source_prefix}_%")
+    sql += " ORDER BY id DESC LIMIT 1"
     with connect(db) as conn:
-        row = conn.execute("""
-            SELECT * FROM trades
-            WHERE symbol = ? AND exit_ts IS NULL
-            ORDER BY id DESC LIMIT 1
-        """, (ticker.upper(),)).fetchone()
+        row = conn.execute(sql, args).fetchone()
     return dict(row) if row else None
 
 
@@ -431,14 +442,24 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
 
         ticker = str(p["ticker"]).upper()
         price = float(p["price"])
-        open_row = _find_open_trade_for_ticker(self.db_path, ticker)
+        # Source-scoped exit: if payload carries `source`, only close trades
+        # from that source on this ticker. Prevents cross-source contamination
+        # (fincept sl_hit must not close a willy trade just because both
+        # happen to be on SOLUSDC.P).
+        src_raw = str(p.get("source") or "").lower().strip()
+        # Sanitize same way _setup_reason_from_entry does — alnum + underscore.
+        src = "".join(c for c in src_raw if c.isalnum() or c == "_") or None
+        open_row = _find_open_trade_for_ticker(self.db_path, ticker, source_prefix=src)
 
         if open_row is None:
             # No matching open trade — log and return 200 so TV doesn't retry
+            scope = f"{ticker}" + (f" (source={src})" if src else "")
             self._reply(200, {"kind": "ignored",
-                              "reason": f"no open trade for {ticker}",
-                              "event": event})
-            self.log_message("IGNORE %s %s (no open trade)", event, ticker)
+                              "reason": f"no open trade for {scope}",
+                              "event": event,
+                              "source_filter": src})
+            self.log_message("IGNORE %s %s (no open trade, source=%s)",
+                             event, ticker, src or "any")
             return
 
         trade_id = open_row["id"]
