@@ -272,9 +272,20 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
         except Exception as e:  # pragma: no cover — notify failure must not break webhook
             self.log_message("NOTIFY_ENTRY_FAILED #%s: %s", row["id"], e)
 
+        # P5b quality filter — only fire daemon on high-conviction signals.
+        # Default thresholds: score>=30 AND tqi>=0.4 (matches dogfood 12.2% pass rate).
+        # Override via P5B_MIN_SCORE / P5B_MIN_TQI env.
+        _min_score = float(os.environ.get("P5B_MIN_SCORE", "30"))
+        _min_tqi = float(os.environ.get("P5B_MIN_TQI", "0.4"))
+        _signal_score = float(p.get("score") or 0)
+        _signal_tqi = float(p.get("tqi") or 0)
+        _quality_ok = _signal_score >= _min_score and _signal_tqi >= _min_tqi
+
         # P5b daemon auto-exec: only fire if notify wasn't rate-limited / cap-aborted
-        # AND if env P5B_AUTOEXEC_ENABLED=1 (safety gate after 3-BTC no-SL drawdown)
-        if notify_result and not notify_result.get("skipped") and os.environ.get("P5B_AUTOEXEC_ENABLED") == "1":
+        # AND quality filter passes AND env P5B_AUTOEXEC_ENABLED=1
+        if (notify_result and not notify_result.get("skipped")
+                and _quality_ok
+                and os.environ.get("P5B_AUTOEXEC_ENABLED") == "1"):
             try:
                 import urllib.request as _urlreq
                 trade_body = json.dumps({
@@ -297,7 +308,11 @@ class TVWebhookHandler(BaseHTTPRequestHandler):
             except Exception as e:  # pragma: no cover — daemon down must not break webhook
                 self.log_message("DAEMON_TRADE_FAILED #%s: %s", row["id"], e)
         elif notify_result and not notify_result.get("skipped"):
-            self.log_message("DAEMON_TRADE_GATED #%s (P5B_AUTOEXEC_ENABLED!=1)", row["id"])
+            if os.environ.get("P5B_AUTOEXEC_ENABLED") != "1":
+                self.log_message("DAEMON_TRADE_GATED #%s (P5B_AUTOEXEC_ENABLED!=1)", row["id"])
+            elif not _quality_ok:
+                self.log_message("DAEMON_TRADE_QUALITY_GATED #%s score=%s tqi=%s (need>=%s/%s)",
+                                 row["id"], _signal_score, _signal_tqi, _min_score, _min_tqi)
 
     def _handle_exit(self, p: dict):
         missing = [k for k in EXIT_REQUIRED if k not in p]
