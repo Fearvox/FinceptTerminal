@@ -444,47 +444,47 @@ def close_all_positions(page) -> dict:
 def switch_symbol(page, symbol: str) -> dict:
     """Open symbol search and load a new symbol on the same chart.
 
-    Tries multiple paths (keyboard shortcut, click symbol button) for robustness.
+    Reverse-engineered TV (147+) DOM:
+      - Open dialog: click '#header-toolbar-symbol-search'
+      - Search input: <input placeholder="Symbol, ISIN, or CUSIP">
+      - Submit: fire Enter KeyboardEvents on the input
+
     Returns title after switch — caller verifies match.
     """
-    import time as _t
     before_title = ""
     try:
         before_title = page.title()
     except Exception:
         pass
 
-    # Approach 1: keyboard shortcut. TV opens symbol search on "/" key.
+    js = """async (symbol) => {
+        const btn = document.querySelector('#header-toolbar-symbol-search');
+        if (!btn) return { error: 'no toolbar symbol button' };
+        btn.click();
+        await new Promise(r => setTimeout(r, 800));
+        const input = document.querySelector('input[placeholder*="Symbol"]');
+        if (!input) return { error: 'no symbol search input after click' };
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(input, symbol);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 700));
+        for (const k of ['keydown', 'keypress', 'keyup']) {
+            input.dispatchEvent(new KeyboardEvent(k, {
+                key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true,
+            }));
+        }
+        await new Promise(r => setTimeout(r, 2000));
+        return { ok: true, title: document.title };
+    }"""
     try:
-        page.click('body', position={"x": 700, "y": 400}, timeout=1500)
-        page.keyboard.press("/")
-        page.wait_for_selector(
-            'input[data-name="symbol-search-items-dialog__input"], input[role="combobox"]',
-            timeout=3000,
-        )
-    except Exception:
-        # Approach 2: click symbol button at top-left
-        try:
-            page.locator('[id="header-toolbar-symbol-search"]').first.click(timeout=2000)
-        except Exception:
-            return {"error": "could not open symbol search dialog", "before": before_title}
-
-    try:
-        box = page.locator(
-            'input[data-name="symbol-search-items-dialog__input"], input[role="combobox"]'
-        ).first
-        box.fill(symbol)
-        _t.sleep(0.4)
-        page.keyboard.press("Enter")
-        _t.sleep(1.8)
+        result = page.evaluate(js, symbol)
     except Exception as e:
-        return {"error": f"fill/enter failed: {e}", "before": before_title}
+        return {"error": f"eval failed: {e}", "before": before_title}
+    if "error" in (result or {}):
+        return {"error": result["error"], "before": before_title}
 
-    after_title = ""
-    try:
-        after_title = page.title()
-    except Exception:
-        pass
+    after_title = result.get("title", "")
     matched = symbol.split(":")[-1].upper() in after_title.upper()
     return {"requested": symbol, "before": before_title, "after": after_title, "matched": matched}
 
