@@ -366,6 +366,170 @@ def get_account_state(page) -> dict:
     }""")
 
 
+# ---------------------------------------------------------------------------
+# Ops API — for autonomous loop/agent use (no human in browser)
+# ---------------------------------------------------------------------------
+
+def eval_js(page, js: str, arg: Any = None) -> Any:
+    """Generic JS evaluation in page context. Returns whatever JS returns.
+
+    Used by daemon /eval endpoint as escape hatch when typed endpoints don't
+    cover what an agent needs. JS string can use `arg` to receive the
+    `arg` parameter (Playwright passes it as the JS function's first param).
+    """
+    if arg is not None:
+        return page.evaluate(js, arg)
+    return page.evaluate(js)
+
+
+def list_positions(page) -> dict:
+    """Scrape Positions tab in Paper Trading panel.
+
+    TV renders positions in a table under Paper Trading widget. Selectors are
+    best-effort; falls back to raw row text if structured cells aren't found.
+    """
+    return page.evaluate("""() => {
+        // Click on Positions tab first if not active
+        const tabs = Array.from(document.querySelectorAll('[role="tab"], [data-name*="tab"]'));
+        const posTab = tabs.find(t => /^positions?$/i.test((t.innerText || '').trim()));
+        if (posTab && posTab.getAttribute('aria-selected') !== 'true') {
+            try { posTab.click(); } catch (e) {}
+        }
+        // Find rows under positions section
+        const rowSel = [
+            '[data-name="paper-trading-positions"] [role="row"]',
+            '[class*="positions"] [role="row"]',
+            '[class*="positionRow"]',
+        ].join(',');
+        const rows = Array.from(document.querySelectorAll(rowSel));
+        const headerKeywords = /symbol|side|qty|price|profit|loss|stop|target/i;
+        const positions = [];
+        for (const r of rows) {
+            const text = (r.innerText || '').replace(/\\s+/g, ' ').trim();
+            if (!text || headerKeywords.test(text.split(' ').slice(0, 3).join(' '))) continue;
+            const cells = Array.from(r.querySelectorAll('[role="cell"], td, [class*="cell"]'))
+                .map(c => (c.innerText || '').replace(/\\s+/g, ' ').trim())
+                .filter(s => s.length);
+            positions.push({ text: text.slice(0, 400), cells: cells.slice(0, 12) });
+        }
+        // Also dump full text near "Positions" word for debugging
+        const text = document.body ? document.body.innerText : '';
+        const idx = text.indexOf('Positions');
+        const snippet = idx >= 0 ? text.slice(idx, idx + 800) : '';
+        return { count: positions.length, positions, panel_snippet: snippet };
+    }""")
+
+
+def close_all_positions(page) -> dict:
+    """Click every 'close position' button visible in Paper Trading panel."""
+    return page.evaluate("""() => {
+        const candidates = Array.from(document.querySelectorAll(
+            '[aria-label*="Close position" i], ' +
+            '[data-name="close-position"], ' +
+            'button[title*="Close" i]'
+        ));
+        let clicked = 0;
+        const labels = [];
+        for (const b of candidates) {
+            try {
+                labels.push(b.getAttribute('aria-label') || b.getAttribute('title') || b.getAttribute('data-name') || '(unlabeled)');
+                b.click();
+                clicked++;
+            } catch (e) {}
+        }
+        return { found: candidates.length, clicked, labels: labels.slice(0, 10) };
+    }""")
+
+
+def switch_symbol(page, symbol: str) -> dict:
+    """Open symbol search and load a new symbol on the same chart.
+
+    Tries multiple paths (keyboard shortcut, click symbol button) for robustness.
+    Returns title after switch — caller verifies match.
+    """
+    import time as _t
+    before_title = ""
+    try:
+        before_title = page.title()
+    except Exception:
+        pass
+
+    # Approach 1: keyboard shortcut. TV opens symbol search on "/" key.
+    try:
+        page.click('body', position={"x": 700, "y": 400}, timeout=1500)
+        page.keyboard.press("/")
+        page.wait_for_selector(
+            'input[data-name="symbol-search-items-dialog__input"], input[role="combobox"]',
+            timeout=3000,
+        )
+    except Exception:
+        # Approach 2: click symbol button at top-left
+        try:
+            page.locator('[id="header-toolbar-symbol-search"]').first.click(timeout=2000)
+        except Exception:
+            return {"error": "could not open symbol search dialog", "before": before_title}
+
+    try:
+        box = page.locator(
+            'input[data-name="symbol-search-items-dialog__input"], input[role="combobox"]'
+        ).first
+        box.fill(symbol)
+        _t.sleep(0.4)
+        page.keyboard.press("Enter")
+        _t.sleep(1.8)
+    except Exception as e:
+        return {"error": f"fill/enter failed: {e}", "before": before_title}
+
+    after_title = ""
+    try:
+        after_title = page.title()
+    except Exception:
+        pass
+    matched = symbol.split(":")[-1].upper() in after_title.upper()
+    return {"requested": symbol, "before": before_title, "after": after_title, "matched": matched}
+
+
+def set_position_sl_via_form(page, sl_price: float) -> dict:
+    """Best-effort SL setter using the entry form's SL widget.
+
+    This is the form-side widget (before submit). To modify SL on an existing
+    open position, use modify_position_sl (clicks pencil in Positions tab).
+    """
+    return _set_sl_in_form(page, sl_price)
+
+
+def modify_position_sl(page, sl_price: float, position_index: int = 0) -> dict:
+    """Modify SL on an open position by index (0 = first/only position).
+
+    TV exposes a 'Stop loss' editable price chip inline in each position row.
+    JS approach: find all rows under Positions, pick by index, then find an
+    input matching the row's SL cell and overwrite value.
+    """
+    return page.evaluate(
+        """([slPrice, idx]) => {
+            // Find positions rows
+            const rows = Array.from(document.querySelectorAll(
+                '[class*="positionRow"], [data-name*="position"] [role="row"]'
+            )).filter(r => (r.innerText || '').includes('SOLUSDC') || (r.innerText || '').includes('BTCUSDC') || (r.innerText || '').includes('USDC'));
+            if (!rows.length) return { error: 'no position rows', tried_selectors: 3 };
+            const row = rows[idx] || rows[0];
+            // Find SL chip — typically a button or input with 'sl' / 'stop' label
+            const slBtn = row.querySelector('[aria-label*="stop" i], [data-name*="stop"]');
+            if (!slBtn) return { error: 'no SL chip on row', row_text: row.innerText.slice(0,200) };
+            try { slBtn.click(); } catch(e) {}
+            // After click, a price input may pop up
+            const input = row.querySelector('input[type="text"]') || document.querySelector('input[type="text"]:not([readonly])');
+            if (!input) return { error: 'no SL input after click', row_text: row.innerText.slice(0,200) };
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(input, String(slPrice));
+            input.dispatchEvent(new Event('input', {bubbles: true}));
+            input.dispatchEvent(new Event('change', {bubbles: true}));
+            return { ok: true, set_to: slPrice, row_text: row.innerText.slice(0,200) };
+        }""",
+        [sl_price, position_index],
+    )
+
+
 def _chart_symbol_matches(page, ticker: str | None) -> tuple[bool, str]:
     """Check if current chart symbol matches the alert ticker."""
     if not ticker:
@@ -380,6 +544,24 @@ def _chart_symbol_matches(page, ticker: str | None) -> tuple[bool, str]:
     # Substring match: GOLD in TVC:GOLD or SP500 in VANTAGE:SP500
     matches = chart_upper == alert_bare or alert_bare in chart_upper or chart_upper in alert_bare
     return matches, f"chart={chart_upper} alert={alert_bare}"
+
+
+def submit_one_order(page, side: str, units: int, sl: float | None = None) -> dict:
+    """Set qty to N units and submit one market order (single click, not N clicks).
+
+    Use this when an agent wants programmatic sizing without 'click N times'
+    overhead. Returns the click result + the qty that was actually set.
+    """
+    side = side.lower()
+    if side not in ("buy", "sell", "long", "short"):
+        return {"error": f"bad side: {side}"}
+    side_n = "buy" if side in ("buy", "long") else "sell"
+    qty_set = _set_qty_in_form(page, units)
+    time.sleep(0.4)
+    if "error" in qty_set:
+        return {"error": f"qty_set failed: {qty_set['error']}", "qty_attempted": units}
+    click = _click_submit_once(page, side_n, sl=sl)
+    return {"side": side_n, "units": units, "qty_set": qty_set, "click": click}
 
 
 def execute_signal(page, action: str, ticker: str | None = None, qty: int = 1, sl: float | None = None) -> dict:

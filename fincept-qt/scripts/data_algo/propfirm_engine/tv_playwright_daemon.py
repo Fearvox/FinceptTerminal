@@ -61,17 +61,43 @@ def _init_session_persistent(headless: bool = False):
     print(f"[daemon] persistent mode | profile=/tmp/tv_pw_profile | TV page url: {page.url}", file=sys.stderr)
 
 
-def _execute_trade(action: str, ticker: str | None, qty: int, sl: float | None = None) -> dict:
-    """Run the trade execution under lock to serialize multiple alerts."""
+def _execute_trade(action: str, ticker: str | None, qty: int, sl: float | None = None,
+                   units: int | None = None) -> dict:
+    """Run the trade execution under lock to serialize multiple alerts.
+
+    If `units` is set (>0), use submit_one_order: set qty to N units, click once.
+    Otherwise fall back to execute_signal (clicks qty times, 1 unit each).
+    """
     with _state["lock"]:
         page = _state["page"]
         if page is None:
             return {"error": "no page in session"}
         try:
-            log = tx.execute_signal(page, action, ticker, qty, sl=sl)
-            return log
+            if units is not None and units > 0:
+                # symbol check still required
+                matches, detail = tx._chart_symbol_matches(page, ticker)
+                if not matches:
+                    return {"aborted": f"chart-symbol-mismatch: {detail}", "units": units}
+                panel = tx.ensure_panel(page)
+                if not panel.get("tradable"):
+                    return {"aborted": "not_tradable", "panel": panel, "units": units}
+                return tx.submit_one_order(page, action, units, sl=sl)
+            # legacy path: click `qty` times, 1 unit each
+            return tx.execute_signal(page, action, ticker, qty, sl=sl)
         except Exception as e:
-            return {"error": f"execute_signal failed: {e}"}
+            return {"error": f"execute failed: {e}"}
+
+
+def _run_under_lock(fn) -> Any:
+    """Helper to run a page-using function under the session lock."""
+    with _state["lock"]:
+        page = _state["page"]
+        if page is None:
+            return {"error": "no page in session"}
+        try:
+            return fn(page)
+        except Exception as e:
+            return {"error": f"{fn.__name__ if hasattr(fn,'__name__') else 'op'} failed: {e}"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -92,46 +118,110 @@ class Handler(BaseHTTPRequestHandler):
                 "title": page.title()[:60] if page else None,
             })
         if self.path == "/status":
-            page = _state.get("page")
-            if page is None:
-                return self._reply(503, {"error": "no page"})
-            try:
-                return self._reply(200, tx.get_status(page))
-            except Exception as e:
-                return self._reply(500, {"error": str(e)})
+            return self._reply(200, _run_under_lock(tx.get_status))
         if self.path == "/account":
-            page = _state.get("page")
-            if page is None:
-                return self._reply(503, {"error": "no page"})
-            try:
-                return self._reply(200, tx.get_account_state(page))
-            except Exception as e:
-                return self._reply(500, {"error": str(e)})
+            return self._reply(200, _run_under_lock(tx.get_account_state))
+        if self.path == "/positions":
+            return self._reply(200, _run_under_lock(tx.list_positions))
+        if self.path == "/endpoints":
+            return self._reply(200, {
+                "GET":  ["/health", "/status", "/account", "/positions", "/endpoints"],
+                "POST": ["/trade", "/eval", "/switch-symbol", "/close-all", "/modify-position-sl"],
+            })
         self._reply(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
-        if self.path != "/trade":
-            return self._reply(404, {"error": "expected POST /trade"})
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length).decode(errors="replace")
         try:
-            body = json.loads(raw)
+            body = json.loads(raw) if raw else {}
         except json.JSONDecodeError as e:
             return self._reply(400, {"error": f"invalid json: {e}"})
-        action = body.get("action", "")
-        ticker = body.get("ticker")
-        qty = int(body.get("qty") or 1)
-        sl = body.get("sl")
-        if sl is not None:
-            try: sl = float(sl)
-            except: sl = None
-        if action.lower() not in ("buy", "sell", "long", "short"):
-            return self._reply(400, {"error": f"bad action: {action}"})
-        result = _execute_trade(action, ticker, qty, sl=sl)
-        self._reply(200, result)
-        self.log_message("TRADE %s %s qty=%s → aborted=%s steps=%d",
-                         action, ticker, qty,
-                         result.get("aborted", "no"), len(result.get("steps", [])))
+
+        if self.path == "/trade":
+            action = body.get("action", "")
+            ticker = body.get("ticker")
+            qty = int(body.get("qty") or 1)
+            units = body.get("units")
+            if units is not None:
+                try: units = int(units)
+                except: units = None
+            sl = body.get("sl")
+            if sl is not None:
+                try: sl = float(sl)
+                except: sl = None
+            if action.lower() not in ("buy", "sell", "long", "short"):
+                return self._reply(400, {"error": f"bad action: {action}"})
+            result = _execute_trade(action, ticker, qty, sl=sl, units=units)
+            self._reply(200, result)
+            self.log_message("TRADE %s %s units=%s qty=%s → aborted=%s",
+                             action, ticker, units, qty, result.get("aborted", "no"))
+            return
+
+        if self.path == "/eval":
+            js = body.get("js", "")
+            arg = body.get("arg")
+            if not js:
+                return self._reply(400, {"error": "missing 'js' field"})
+            with _state["lock"]:
+                page = _state["page"]
+                if page is None:
+                    return self._reply(503, {"error": "no page"})
+                try:
+                    result = tx.eval_js(page, js, arg)
+                    self._reply(200, {"result": result})
+                except Exception as e:
+                    self._reply(500, {"error": f"eval failed: {e}"})
+            return
+
+        if self.path == "/switch-symbol":
+            symbol = body.get("symbol", "")
+            if not symbol:
+                return self._reply(400, {"error": "missing 'symbol' field"})
+            with _state["lock"]:
+                page = _state["page"]
+                if page is None:
+                    return self._reply(503, {"error": "no page"})
+                try:
+                    result = tx.switch_symbol(page, symbol)
+                    self._reply(200, result)
+                except Exception as e:
+                    self._reply(500, {"error": f"switch_symbol failed: {e}"})
+            return
+
+        if self.path == "/close-all":
+            with _state["lock"]:
+                page = _state["page"]
+                if page is None:
+                    return self._reply(503, {"error": "no page"})
+                try:
+                    result = tx.close_all_positions(page)
+                    self._reply(200, result)
+                    self.log_message("CLOSE_ALL → clicked=%s found=%s",
+                                     result.get("clicked"), result.get("found"))
+                except Exception as e:
+                    self._reply(500, {"error": f"close_all failed: {e}"})
+            return
+
+        if self.path == "/modify-position-sl":
+            sl_price = body.get("price")
+            idx = int(body.get("index") or 0)
+            if sl_price is None:
+                return self._reply(400, {"error": "missing 'price' field"})
+            try: sl_price = float(sl_price)
+            except: return self._reply(400, {"error": "bad price"})
+            with _state["lock"]:
+                page = _state["page"]
+                if page is None:
+                    return self._reply(503, {"error": "no page"})
+                try:
+                    result = tx.modify_position_sl(page, sl_price, position_index=idx)
+                    self._reply(200, result)
+                except Exception as e:
+                    self._reply(500, {"error": f"modify_position_sl failed: {e}"})
+            return
+
+        self._reply(404, {"error": f"unknown POST {self.path}"})
 
     def log_message(self, fmt, *args):  # noqa: A003
         sys.stderr.write(f"[{self.log_date_time_string()}] {fmt % args}\n")
