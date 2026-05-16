@@ -126,7 +126,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/endpoints":
             return self._reply(200, {
                 "GET":  ["/health", "/status", "/account", "/positions", "/endpoints"],
-                "POST": ["/trade", "/eval", "/switch-symbol", "/close-all", "/modify-position-sl"],
+                "POST": ["/trade", "/eval", "/switch-symbol", "/close-all",
+                         "/modify-position-sl", "/click", "/fill"],
             })
         self._reply(404, {"error": "not found"})
 
@@ -201,6 +202,57 @@ class Handler(BaseHTTPRequestHandler):
                                      result.get("clicked"), result.get("found"))
                 except Exception as e:
                     self._reply(500, {"error": f"close_all failed: {e}"})
+            return
+
+        if self.path == "/click":
+            sel = body.get("selector", "")
+            nth = int(body.get("nth") or 0)
+            force = bool(body.get("force") or False)
+            timeout = int(body.get("timeout_ms") or 5000)
+            if not sel:
+                return self._reply(400, {"error": "missing 'selector'"})
+            with _state["lock"]:
+                page = _state["page"]
+                if page is None:
+                    return self._reply(503, {"error": "no page"})
+                try:
+                    loc = page.locator(sel).nth(nth)
+                    if loc.count() == 0:
+                        return self._reply(404, {"error": f"no element matched: {sel}"})
+                    loc.click(timeout=timeout, force=force)
+                    self._reply(200, {
+                        "ok": True, "selector": sel, "nth": nth,
+                        "count": loc.count(),
+                    })
+                except Exception as e:
+                    self._reply(500, {"error": f"click failed: {e}"})
+            return
+
+        if self.path == "/fill":
+            sel = body.get("selector", "")
+            value = body.get("value", "")
+            nth = int(body.get("nth") or 0)
+            press_enter = bool(body.get("press_enter") or False)
+            timeout = int(body.get("timeout_ms") or 5000)
+            if not sel:
+                return self._reply(400, {"error": "missing 'selector'"})
+            with _state["lock"]:
+                page = _state["page"]
+                if page is None:
+                    return self._reply(503, {"error": "no page"})
+                try:
+                    loc = page.locator(sel).nth(nth)
+                    if loc.count() == 0:
+                        return self._reply(404, {"error": f"no element matched: {sel}"})
+                    loc.fill(str(value), timeout=timeout)
+                    if press_enter:
+                        loc.press("Enter", timeout=timeout)
+                    self._reply(200, {
+                        "ok": True, "selector": sel, "value": str(value),
+                        "enter": press_enter,
+                    })
+                except Exception as e:
+                    self._reply(500, {"error": f"fill failed: {e}"})
             return
 
         if self.path == "/modify-position-sl":
