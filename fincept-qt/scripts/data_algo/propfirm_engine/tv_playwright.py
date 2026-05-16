@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -26,25 +27,69 @@ from typing import Any
 PROFILE_DIR = Path("/tmp/tv_pw_profile")
 TV_CHART_URL = "https://www.tradingview.com/chart/"
 
+# Default UA spoof: matches Brave 147 / Chrome 130 on macOS. TradingView
+# rejects Playwright's bundled-Chromium UA as "unsafe browser" — using a
+# real-world Brave/Chrome UA fixes login.
+DEFAULT_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.0.0 Safari/537.36"
+)
+
+# Common Brave install path on macOS. Override with TV_PW_EXECUTABLE_PATH.
+DEFAULT_BRAVE_PATH = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+
 
 def _ensure_profile():
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def open_browser_persistent(headless: bool = False):
+def open_browser_persistent(
+    headless: bool = False,
+    executable_path: str | None = None,
+    user_agent: str | None = None,
+):
     """
     Open Chromium with persistent profile. Returns (playwright, context, page).
+
     First call: profile fresh, may need login. Reuses cookies on subsequent calls.
+
+    Parameters
+    ----------
+    headless: run without UI (only set after login persisted).
+    executable_path: full path to a Chromium-compatible binary (e.g. Brave).
+        Defaults to env TV_PW_EXECUTABLE_PATH, then DEFAULT_BRAVE_PATH if it
+        exists, then Playwright's bundled Chromium.
+    user_agent: override the browser UA. Defaults to env TV_PW_USER_AGENT,
+        then DEFAULT_UA (a real Brave/Chrome UA) to bypass TV's "unsafe
+        browser" gate.
     """
     from playwright.sync_api import sync_playwright
     _ensure_profile()
+
+    # Resolve executable_path: explicit arg > env > Brave default if present > None
+    if executable_path is None:
+        executable_path = os.environ.get("TV_PW_EXECUTABLE_PATH")
+    if executable_path is None and Path(DEFAULT_BRAVE_PATH).exists():
+        executable_path = DEFAULT_BRAVE_PATH
+
+    # Resolve UA: explicit arg > env > DEFAULT_UA
+    if user_agent is None:
+        user_agent = os.environ.get("TV_PW_USER_AGENT", DEFAULT_UA)
+
+    launch_kwargs: dict[str, Any] = {
+        "user_data_dir": str(PROFILE_DIR),
+        "headless": headless,
+        "viewport": {"width": 1400, "height": 900},
+        "no_viewport": False,
+        "user_agent": user_agent,
+    }
+    if executable_path:
+        launch_kwargs["executable_path"] = executable_path
+
     pw = sync_playwright().start()
-    context = pw.chromium.launch_persistent_context(
-        user_data_dir=str(PROFILE_DIR),
-        headless=headless,
-        viewport={"width": 1400, "height": 900},
-        no_viewport=False,
-    )
+    context = pw.chromium.launch_persistent_context(**launch_kwargs)
+
     if context.pages:
         page = context.pages[0]
     else:
