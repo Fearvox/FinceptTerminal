@@ -102,9 +102,29 @@ node_modules/
 dist-ssr/
 
 # ── Claude Code — never commit ───────────────────────────────
-.claude/settings.local.json
+.claude/
 CLAUDE.md
 fincept-qt/DESIGN_SYSTEM.md
+
+# ── Other AI / agent harnesses (local-only, never commit) ────
+.codex/
+.kilo/
+.playwright-mcp/
+.superpowers/
+
+# ── IDE workspace files ──────────────────────────────────────
+*.code-workspace
+
+# ── Runtime PID + log dirs ───────────────────────────────────
+*.pid
+**/auto_exec/.logs/
+**/.logs/
+
+# ── Vercel monitor scratch ───────────────────────────────────
+fincept-qt/scripts/data_algo/propfirm_engine/vercel-monitor/
+
+# ── SQLite backups (phantom_cleanup / manual) ────────────────
+*.sqlite.bak-*
 
 # ── Build output (uitest) ─────────────────────────────────────
 fincept-qt/uitest/build/
