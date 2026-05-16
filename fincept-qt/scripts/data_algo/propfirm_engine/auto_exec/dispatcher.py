@@ -17,9 +17,11 @@ Interfaces expected from sibling modules (built by parallel subagents):
 
 from __future__ import annotations
 
+import http.client
 import importlib
 import json
 import logging
+import os
 import pathlib
 import threading
 from datetime import datetime, timezone
@@ -224,15 +226,43 @@ class AutoExecDispatcher:
         }
 
     def _execute_live(self, *, action: str, ticker: str, qty: int) -> dict:
-        """Lazily import tv_autoexec and call execute_signal.
+        """Dispatch a live entry to the configured backend.
+
+        Backend selected via env AUTOEXEC_BACKEND:
+          - "opencli" (default)      → tv_autoexec.execute_signal via opencli CLI bridge
+          - "playwright_daemon"      → POST to localhost:5556 (independent profile)
 
         Lazy import keeps the dispatcher unit-testable without opencli present.
         """
-        # Lazy import — only touched on a real live dispatch.
+        backend = os.environ.get("AUTOEXEC_BACKEND", "opencli").strip().lower()
+        if backend == "playwright_daemon":
+            return self._execute_via_daemon(action=action, ticker=ticker, qty=qty)
+        # Default: opencli path
         tv_autoexec = importlib.import_module(
             "propfirm_engine.tv_autoexec"
         )
         return tv_autoexec.execute_signal(action=action, ticker=ticker, qty=qty)
+
+    def _execute_via_daemon(self, *, action: str, ticker: str, qty: int) -> dict:
+        """POST to the tv_playwright_daemon HTTP server (mode=persistent)."""
+        host = os.environ.get("AUTOEXEC_DAEMON_HOST", "127.0.0.1")
+        port = int(os.environ.get("AUTOEXEC_DAEMON_PORT", "5556"))
+        body = json.dumps({"action": action, "ticker": ticker, "qty": qty}).encode()
+        conn = http.client.HTTPConnection(host, port, timeout=15)
+        try:
+            conn.request("POST", "/trade", body, {"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            raw = resp.read().decode(errors="replace")
+            if resp.status != 200:
+                return {"aborted": f"daemon_http_{resp.status}", "raw": raw[:200]}
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return {"aborted": "daemon_bad_json", "raw": raw[:200]}
+        except Exception as e:
+            return {"aborted": f"daemon_unreachable: {e}"}
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # Logging

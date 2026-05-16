@@ -44,7 +44,21 @@ def _init_session(cdp_url: str = "http://127.0.0.1:9222"):
     _state["pw"] = pw
     _state["context"] = context
     _state["page"] = page
-    print(f"[daemon] connected to Chrome CDP; TV page url: {page.url}", file=sys.stderr)
+    print(f"[daemon] cdp mode | TV page url: {page.url}", file=sys.stderr)
+
+
+def _init_session_persistent(headless: bool = False):
+    """Launch a dedicated Chromium with persistent profile (/tmp/tv_pw_profile).
+
+    Independent from operator's main browser — won't get kicked by TV's
+    single-active-session rule. Operator logs in once on first run; cookies
+    persist in profile directory.
+    """
+    pw, context, page = tx.open_browser_persistent(headless=headless)
+    _state["pw"] = pw
+    _state["context"] = context
+    _state["page"] = page
+    print(f"[daemon] persistent mode | profile=/tmp/tv_pw_profile | TV page url: {page.url}", file=sys.stderr)
 
 
 def _execute_trade(action: str, ticker: str | None, qty: int, sl: float | None = None) -> dict:
@@ -126,10 +140,19 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     p = argparse.ArgumentParser(prog="tv_playwright_daemon")
     p.add_argument("--port", type=int, default=DAEMON_PORT)
-    p.add_argument("--cdp", default="http://127.0.0.1:9222")
+    p.add_argument("--mode", choices=("cdp", "persistent"), default="cdp",
+                   help="cdp: attach to existing Chrome via CDP. "
+                        "persistent: launch dedicated Chromium with /tmp/tv_pw_profile.")
+    p.add_argument("--cdp", default="http://127.0.0.1:9222",
+                   help="(cdp mode) CDP URL of existing Chrome.")
+    p.add_argument("--headless", action="store_true",
+                   help="(persistent mode) run Chromium headless. Default is windowed so operator can log in.")
     args = p.parse_args()
 
-    _init_session(args.cdp)
+    if args.mode == "persistent":
+        _init_session_persistent(headless=args.headless)
+    else:
+        _init_session(args.cdp)
 
     server = HTTPServer(("127.0.0.1", args.port), Handler)
     print(f"[daemon] tv_playwright_daemon listening on http://127.0.0.1:{args.port}", file=sys.stderr)
