@@ -150,18 +150,20 @@ def _run_js(page, js: str) -> Any:
 def get_status(page) -> dict:
     return _run_js(page, """() => {
         const panel = document.querySelector('[data-name="order-panel"]');
-        const buy = document.querySelector('[data-name="buy-order-button"]');
-        const sell = document.querySelector('[data-name="sell-order-button"]');
+        const buy = document.querySelector('[data-name="side-control-buy"]');
+        const sell = document.querySelector('[data-name="side-control-sell"]');
         const qty = document.querySelector('[data-name="qtyEl"]');
         const panelMsg = panel ? panel.textContent.trim().slice(0, 200) : '';
         const nonTradable = /non-tradable|cannot trade|can't trade/i.test(panelMsg);
+        const buyVisible = !!buy && buy.offsetParent !== null;
+        const sellVisible = !!sell && sell.offsetParent !== null;
         return {
             url: window.location.href,
             title: document.title.slice(0, 80),
-            tradable: !!buy && !nonTradable,
+            tradable: buyVisible && !nonTradable,
             panel_msg: panelMsg,
-            buy_visible: !!buy,
-            sell_visible: !!sell,
+            buy_visible: buyVisible,
+            sell_visible: sellVisible,
             qty_visible: !!qty,
         };
     }""")
@@ -230,7 +232,7 @@ def _resilient_click(locator, label: str) -> dict:
 
 def _set_side_via_form(page, side: str) -> dict:
     """Switch order form side via ribbon (best-effort, may be CSS-hidden)."""
-    target_dn = "buy-order-button" if side == "buy" else "sell-order-button"
+    target_dn = "side-control-buy" if side == "buy" else "side-control-sell"
     btn = page.locator(f'[data-name="{target_dn}"]').first
     if btn.count() == 0:
         return {"error": f"{target_dn} not in DOM"}
@@ -583,7 +585,7 @@ def execute_signal(page, action: str, ticker: str | None = None, qty: int = 1, s
     s1 = ensure_panel(page)
     log["steps"].append({"step": "ensure_panel", "status": s1})
     if not s1.get("tradable"):
-        log["aborted"] = "not tradable: " + s1.get("panel_msg", "no buy-order-button found")
+        log["aborted"] = "not tradable: " + s1.get("panel_msg", "no side-control-buy found")
         return log
     if action.lower() in ("buy", "long"):
         click = click_buy(page, qty=qty, sl=sl)

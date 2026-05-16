@@ -2,9 +2,10 @@
 TV auto-exec adapter via opencli — drives operator's Brave TV session.
 
 The session is shared with operator's browser (cookies + login inherited).
-TV's Paper Trading panel exposes quick-trade buttons in DOM via data-name:
-  - buy-order-button   → 1-click market BUY
-  - sell-order-button  → 1-click market SELL
+TV's Paper Trading panel exposes quick-trade buttons in DOM via data-name
+(TV v147+ renamed these from buy-order-button / sell-order-button):
+  - side-control-buy   → 1-click market BUY (top of order-panel ribbon)
+  - side-control-sell  → 1-click market SELL
   - qtyEl              → quantity display/control
   - order-panel        → status messages (e.g. "Non-tradable symbol")
 
@@ -99,16 +100,18 @@ def get_panel_status() -> dict:
     """
     js = """
     const panel = document.querySelector('[data-name="order-panel"]');
-    const buyBtn = document.querySelector('[data-name="buy-order-button"]');
-    const sellBtn = document.querySelector('[data-name="sell-order-button"]');
+    const buyBtn = document.querySelector('[data-name="side-control-buy"]');
+    const sellBtn = document.querySelector('[data-name="side-control-sell"]');
     const panelText = panel ? panel.textContent.trim() : '';
     const nonTradable = /non-tradable|cannot trade|can't trade/i.test(panelText);
+    const buyVisible = !!buyBtn && buyBtn.offsetParent !== null;
+    const sellVisible = !!sellBtn && sellBtn.offsetParent !== null;
     return JSON.stringify({
-      tradable: !!buyBtn && !nonTradable,
+      tradable: buyVisible && !nonTradable,
       message: panelText.slice(0, 200),
       symbol: document.title.slice(0, 60),
-      buy_visible: !!buyBtn,
-      sell_visible: !!sellBtn,
+      buy_visible: buyVisible,
+      sell_visible: sellVisible,
     });
     """
     return eval_js(js)
@@ -134,7 +137,7 @@ def get_qty() -> int | None:
 def click_buy() -> dict:
     """Fire 1-click market BUY at current qty."""
     js = """
-    const buy = document.querySelector('[data-name="buy-order-button"]');
+    const buy = document.querySelector('[data-name="side-control-buy"]');
     if (!buy) return JSON.stringify({error: 'buy button not in DOM'});
     const disabled = buy.classList.toString().toLowerCase().includes('disabled');
     if (disabled) return JSON.stringify({error: 'buy button disabled', classes: buy.className});
@@ -147,7 +150,7 @@ def click_buy() -> dict:
 def click_sell() -> dict:
     """Fire 1-click market SELL at current qty."""
     js = """
-    const sell = document.querySelector('[data-name="sell-order-button"]');
+    const sell = document.querySelector('[data-name="side-control-sell"]');
     if (!sell) return JSON.stringify({error: 'sell button not in DOM'});
     const disabled = sell.classList.toString().toLowerCase().includes('disabled');
     if (disabled) return JSON.stringify({error: 'sell button disabled'});
