@@ -77,18 +77,32 @@ def open_browser_persistent(
     if user_agent is None:
         user_agent = os.environ.get("TV_PW_USER_AGENT", DEFAULT_UA)
 
+    # Anti-automation fingerprint scrubbing — Google OAuth (and others) refuse
+    # browsers identifying as automation. Three layers:
+    #   1. ignore_default_args removes Playwright's --enable-automation flag
+    #      (the "Brave is being controlled by automated test software" banner)
+    #   2. --disable-blink-features=AutomationControlled removes the
+    #      AutomationControlled blink feature that exposes the webdriver flag
+    #   3. add_init_script below overrides navigator.webdriver to undefined
     launch_kwargs: dict[str, Any] = {
         "user_data_dir": str(PROFILE_DIR),
         "headless": headless,
         "viewport": {"width": 1400, "height": 900},
         "no_viewport": False,
         "user_agent": user_agent,
+        "ignore_default_args": ["--enable-automation"],
+        "args": ["--disable-blink-features=AutomationControlled"],
     }
     if executable_path:
         launch_kwargs["executable_path"] = executable_path
 
     pw = sync_playwright().start()
     context = pw.chromium.launch_persistent_context(**launch_kwargs)
+
+    # Layer 3: scrub navigator.webdriver on every page in this context
+    context.add_init_script(
+        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+    )
 
     if context.pages:
         page = context.pages[0]
