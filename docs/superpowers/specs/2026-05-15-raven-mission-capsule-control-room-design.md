@@ -11,16 +11,21 @@
 
 ## 1. Product Thesis
 
-Raven should become the operator surface for AI-native mission capsules.
+Raven should become the productized Mission Capsule OS for AI-native operator
+work.
 
 The first capsule is **Fincept Auto-Exec Control Room**: a control surface that
 observes live Fincept execution infrastructure, preserves Windburn-style gates,
 routes bounded work across Claude/Codex/Hermes/Superconductor, and emits receipts
 for every action that could affect execution confidence.
 
-This is not a normal dashboard. It is an **editorial command surface**: chapter
-scale when scanning, dense proof when deciding, matrix form when selecting a
-tool, lane, or autonomy mode.
+This is not a normal dashboard. It is an **editorial command product** for
+mission capsules: chapter scale when scanning, dense proof when deciding, matrix
+form when selecting a tool, lane, or autonomy mode.
+
+Flight recorder and gate console are core product modules, not the whole
+product. Raven still needs its own product surface: capsule home, capsule
+install/selection, gates, action drafts, receipts, and operator closeout.
 
 The ambition is high: Raven should feel like the operating manual for a
 one-person AI-native company. The posture can borrow the intensity of a
@@ -58,7 +63,34 @@ Fincept already exposes mission-grade signals:
 The cockpit should make these signals legible without turning them into
 pseudo-certainty.
 
-### 2.3 Founder's Playbook Visual Translation
+### 2.3 Context-Continuity Cockpit Observation
+
+VS Code has quietly become the practical multi-agent cockpit:
+
+- left side: worktrees, sessions, lanes, gates;
+- center: active artifact, diff, packet, source file;
+- right side: agent loop, chat, review, evidence;
+- bottom: terminal and live runtime truth.
+
+Kilo Code is strong because it keeps the implementation loop glued to the
+editor/worktree/terminal context. It does not ask the operator to re-explain the
+repo inside a separate orchestration product.
+
+Raven should learn from this without copying or shrinking itself to a passive
+overlay:
+
+- **VS Code/Kilo/Codex/Claude** own inline implementation loops.
+- **Superconductor** owns session and worktree conduction.
+- **MUW/Linear/GitHub** own external truth and issue state.
+- **Raven** owns the productized mission layer: capsule selection, trust state,
+  gate policy, action drafts, receipts, and closeout.
+
+The design lesson is context continuity, not product retreat. Raven should not
+clone VS Code, but it should feel like a real product mode sitting above the
+active cockpit: a capsule OS that knows what the operator is trying to ship and
+why the current loop is or is not trustworthy.
+
+### 2.4 Founder's Playbook Visual Translation
 
 The reference playbook uses:
 
@@ -97,6 +129,8 @@ Raven should translate this into:
 - No v1 live trading execution.
 - No v1 automatic cherry-pick, live-arm, or branch mutation.
 - No hidden escalation from read-only mode into mutation.
+- No unbounded Raven-as-generic-chat-app or Raven-as-editor clone. Productized
+  capsule chat/action surfaces are allowed when tied to gates and receipts.
 - No generic SaaS dashboard aesthetic.
 - No claim that local smoke tests can resolve remote gates.
 - No product UI that exposes local filesystem details in public/demo contexts.
@@ -156,15 +190,16 @@ documented now so the UI and data model do not paint us into a corner.
 
 ### 6.1 Product Feel
 
-Raven should feel like a field manual for commanding AI systems:
+Raven should feel like a productized field manual for commanding AI systems:
 
 - editorial, not decorative;
 - high-contrast and calm;
-- visibly human-directed;
+- visibly human-directed and execution-tool-aware;
+- cohesive enough to be a standalone product mode;
 - fast to scan under stress;
 - precise enough to defend a decision later.
 
-The first screen is a mission chapter:
+The first screen is a mission chapter and trust verdict:
 
 ```text
 Fincept Auto-Exec Control Room
@@ -175,7 +210,8 @@ Next: review approved-action drafts before changing mode.
 
 ### 6.2 Layout
 
-Primary layout:
+Primary layout, inspired by VS Code's real cockpit shape but productized for
+mission capsules:
 
 ```text
 ┌─────────────────────────────────────────────┐
@@ -200,6 +236,10 @@ Decision mode uses matrices:
 - which gates block completion;
 - which receipt is required.
 
+Raven may expose agent/chat/action surfaces, but they must be capsule-scoped and
+receipt-backed. It should not become a generic chat box detached from mission
+truth.
+
 ### 6.3 Visual Language
 
 - Serif display titles for mission chapter covers.
@@ -210,6 +250,7 @@ Decision mode uses matrices:
 - No nested cards.
 - No public UI that leaks absolute paths, hostnames, token paths, or raw SSH/tmux
   targets.
+- No attempt to replace VS Code, Kilo, Claude, Codex, or Superconductor.
 
 ## 7. Data Flow
 
@@ -342,4 +383,3 @@ direction:
 - Should the first UI land in Raven TUI only, or also export an HTML owner
   packet?
 - Which exact fields should become stable JSON for external capsules?
-

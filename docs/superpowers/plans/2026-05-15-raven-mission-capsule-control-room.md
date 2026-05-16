@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a read-only Raven mission capsule for `fincept.autoexec-control-room` that exposes Fincept auto-exec truth, gates, action drafts, and mode ladder without mutating Fincept or EverOS state.
+**Goal:** Add the first product-mode Raven mission capsule, `fincept.autoexec-control-room`, exposing Fincept auto-exec truth, gates, action drafts, receipts, and mode ladder without mutating Fincept or EverOS state.
 
-**Architecture:** Implement capsule support inside the existing Raven Rust console as typed snapshot data plus a read-only Fincept adapter, CLI output, and a TUI panel. Keep Fincept-specific WebUI as a separate downstream surface: it may later become a capsule source, but it does not define the Raven host product.
+**Architecture:** Implement capsule support inside the existing Raven Rust console as typed snapshot data plus a read-only Fincept adapter, CLI output, and a TUI product panel. VS Code/Kilo are context-continuity references, not the product boundary; Raven remains the Mission Capsule OS host. Keep Fincept-specific WebUI as a separate downstream surface: it may later become a capsule source, but it does not define the Raven host product.
 
 **Tech Stack:** Rust 2021, `serde`, `serde_json`, `clap`, `ratatui`, existing `bin/raven` wrapper, existing `just raven-console-check` target.
 
@@ -25,6 +25,11 @@ V1 is read-only:
 
 The Fincept-specialized WebUI can continue in parallel. Raven treats it as a
 future source adapter, not as the product direction.
+
+VS Code/Kilo cockpit patterns are references for continuity: lanes on the left,
+artifact in the center, agent/evidence loop on the right, terminal below. The
+implementation should still productize Raven as the capsule host instead of
+reducing it to a passive recorder.
 
 ## File Map
 
@@ -62,6 +67,7 @@ Modify in EverOS:
 
 **Files:**
 - Modify: `use-cases/hermes-everos-memory/raven-console/src/model.rs`
+- Modify: `use-cases/hermes-everos-memory/raven-console/src/snapshot.rs`
 
 - [ ] **Step 1: Write the failing model serialization test**
 
@@ -196,6 +202,15 @@ Then update `RavenSnapshot` by adding this field after `sc: ScReport`:
 pub mission_capsules: Vec<MissionCapsuleView>,
 ```
 
+In `raven-console/src/snapshot.rs`, keep the existing `RavenSnapshot` literal
+compilable by adding an empty capsule list after `sc,`:
+
+```rust
+        mission_capsules: Vec::new(),
+```
+
+Task 3 replaces this temporary empty list with real adapter data.
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 ```bash
@@ -207,7 +222,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit the model change**
 
 ```bash
-git add use-cases/hermes-everos-memory/raven-console/src/model.rs
+git add use-cases/hermes-everos-memory/raven-console/src/model.rs use-cases/hermes-everos-memory/raven-console/src/snapshot.rs
 git commit -m "feat(raven): add mission capsule model types" -m "Add read-only mission capsule data structures for sources, gates, action drafts, modes, and snapshot embedding." -m "Co-authored-by: Codex <noreply@openai.com>"
 ```
 
