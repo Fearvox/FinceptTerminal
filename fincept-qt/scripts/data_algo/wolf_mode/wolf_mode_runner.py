@@ -99,6 +99,53 @@ def scan_phase(verbose: bool = False) -> list[dict]:
     return candidates
 
 
+# ─── position lock (dedup) ─────────────────────────────────────────────────
+
+
+def load_existing_positions(window_days: int = 14) -> dict[str, dict]:
+    """Read ledger and tally cumulative live BET size per contract_id in the
+    last `window_days`. Returns {contract_id: {size_mana: int, count: int}}.
+
+    Used by decide_phase to enforce SINGLE_MARKET_MAX cumulative and to skip
+    contracts already filled to capacity.
+    """
+    if not LEDGER_FILE.exists():
+        return {}
+    cutoff = now() - timedelta(days=window_days)
+    pos: dict[str, dict] = {}
+    try:
+        for line in LEDGER_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("phase") != "live":
+                continue
+            if r.get("decision") != "BET":
+                continue
+            res = r.get("result") or {}
+            if res.get("error") or not res.get("bet_id"):
+                continue  # only count successfully placed bets
+            try:
+                ts = datetime.fromisoformat((r.get("ts") or "").replace("Z", "+00:00"))
+                if ts < cutoff:
+                    continue
+            except Exception:
+                continue
+            cid = r["candidate"].get("contract_id")
+            if not cid:
+                continue
+            slot = pos.setdefault(cid, {"size_mana": 0, "count": 0, "first_ts": r["ts"]})
+            slot["size_mana"] += r.get("size_mana") or 0
+            slot["count"] += 1
+    except OSError:
+        return {}
+    return pos
+
+
 # ─── auditor overrides ─────────────────────────────────────────────────────
 
 
@@ -263,8 +310,13 @@ def decide_phase(scored: list[dict], dry_run: bool, verbose: bool = False) -> li
     Priority order:
       1. Candidates with auditor my_prob: BET if score >= SCORE_MIN_BET, SKIP if auditor said SKIP
       2. Other candidates: WATCH if liquidity > 100, otherwise drop
+
+    Position-lock: contracts with existing live BET in past 14d → DEDUP_SKIP.
+    SINGLE_MARKET_MAX enforced cumulatively: if size + existing >= cap → trim or skip.
     """
     decisions = []
+    existing = load_existing_positions(window_days=14)
+
     # Sort scored: auditor-graded first (by composite desc), then by volume_24h
     audited = sorted(
         [c for c in scored if c.get("auditor") is not None],
@@ -276,23 +328,65 @@ def decide_phase(scored: list[dict], dry_run: bool, verbose: bool = False) -> li
                  and (c.get("total_liquidity") or 0) > 100]
     unaudited.sort(key=lambda c: c.get("volume_24h", 0), reverse=True)
 
+    # Daily cap tracking — naive: sum of today's live BET in ledger
+    today_str = utc_iso()[:10]
+    today_bet_total = 0.0
+    if LEDGER_FILE.exists():
+        for line in LEDGER_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                if (r.get("phase") == "live" and r.get("decision") == "BET"
+                        and (r.get("ts") or "").startswith(today_str)
+                        and (r.get("result") or {}).get("bet_id")):
+                    today_bet_total += r.get("size_mana") or 0
+            except Exception:
+                continue
+
     # All audited get a decision
     for c in audited:
         composite = c.get("score", {}).get("composite", 0)
         auditor_skip = c.get("auditor", {}).get("side") == "SKIP"
+        cid = c["contract_id"]
+        existing_size = (existing.get(cid) or {}).get("size_mana", 0)
+
         if auditor_skip:
             decision = "SKIP"
             size = 0
+            reason_extra = "auditor_skip"
+        elif existing_size > 0:
+            decision = "DEDUP_SKIP"
+            size = 0
+            reason_extra = f"existing_position_M${existing_size:.0f}"
+        elif today_bet_total >= DAILY_BET_CAP:
+            decision = "DAILY_CAP_SKIP"
+            size = 0
+            reason_extra = f"daily_cap_M${today_bet_total:.0f}_of_{DAILY_BET_CAP:.0f}"
         elif composite >= SCORE_MIN_BET:
             decision = "BET"
-            # Kelly-aware size, capped to SINGLE_BET_MAX, floored at M$5 to overcome slippage
             kelly = c.get("score", {}).get("kelly", 0)
             conf = c.get("score", {}).get("conf", 0.5)
-            raw_size = BANKROLL_CAP * kelly * conf  # half-Kelly already in kelly itself
+            raw_size = BANKROLL_CAP * kelly * conf
             size = int(max(5, min(SINGLE_BET_MAX, raw_size)))
+            # Enforce SINGLE_MARKET_MAX cumulative (defensive even though existing=0 here)
+            max_room = SINGLE_MARKET_MAX - existing_size
+            size = int(min(size, max_room))
+            # Enforce daily remaining
+            daily_room = DAILY_BET_CAP - today_bet_total
+            size = int(min(size, daily_room))
+            if size < 5:
+                decision = "DAILY_CAP_SKIP"
+                size = 0
+                reason_extra = "insufficient_room"
+            else:
+                today_bet_total += size
+                reason_extra = "ok"
         else:
             decision = "WATCH"
             size = 0
+            reason_extra = "score_below_threshold"
         decisions.append({
             "candidate": {
                 "contract_id": c["contract_id"],
@@ -307,7 +401,7 @@ def decide_phase(scored: list[dict], dry_run: bool, verbose: bool = False) -> li
             "decision": decision,
             "size_mana": size,
             "outcome": c.get("auditor", {}).get("side") if decision == "BET" else None,
-            "reason": c.get("auditor", {}).get("rationale", "")[:160],
+            "reason": f"{reason_extra} | {(c.get('auditor', {}).get('rationale') or '')[:140]}",
             "auditor_used": True,
         })
 
@@ -334,8 +428,11 @@ def decide_phase(scored: list[dict], dry_run: bool, verbose: bool = False) -> li
     if verbose:
         n_bet = sum(1 for d in decisions if d["decision"] == "BET")
         n_skip = sum(1 for d in decisions if d["decision"] == "SKIP")
+        n_dedup = sum(1 for d in decisions if d["decision"] == "DEDUP_SKIP")
+        n_daily = sum(1 for d in decisions if d["decision"] == "DAILY_CAP_SKIP")
         n_watch = sum(1 for d in decisions if d["decision"] == "WATCH")
-        print(f"[decide] {n_bet} BET / {n_skip} SKIP / {n_watch} WATCH", file=sys.stderr)
+        print(f"[decide] {n_bet} BET / {n_skip} SKIP / {n_dedup} DEDUP / {n_daily} DAILY_CAP / {n_watch} WATCH",
+              file=sys.stderr)
     return decisions
 
 
@@ -345,7 +442,8 @@ def decide_phase(scored: list[dict], dry_run: bool, verbose: bool = False) -> li
 def execute_phase(decisions: list[dict], dry_run: bool, cycle_id: str,
                   verbose: bool = False) -> dict:
     """Log every decision to ledger. If live (dry_run=False), POST bets."""
-    summary = {"bet": 0, "skip": 0, "watch": 0, "errored": 0, "total_size": 0}
+    summary = {"bet": 0, "skip": 0, "watch": 0, "dedup_skip": 0, "daily_cap_skip": 0,
+               "errored": 0, "total_size": 0}
     for d in decisions:
         row = {
             "ts": utc_iso(),
@@ -391,6 +489,10 @@ def execute_phase(decisions: list[dict], dry_run: bool, cycle_id: str,
             summary["total_size"] += d["size_mana"]
         elif d["decision"] == "SKIP":
             summary["skip"] += 1
+        elif d["decision"] == "DEDUP_SKIP":
+            summary["dedup_skip"] += 1
+        elif d["decision"] == "DAILY_CAP_SKIP":
+            summary["daily_cap_skip"] += 1
         else:
             summary["watch"] += 1
         append_decision(row)
