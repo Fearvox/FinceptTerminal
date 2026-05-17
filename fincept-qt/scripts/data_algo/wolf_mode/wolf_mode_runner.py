@@ -99,6 +99,50 @@ def scan_phase(verbose: bool = False) -> list[dict]:
     return candidates
 
 
+# ─── auditor overrides ─────────────────────────────────────────────────────
+
+
+AUDITOR_OVERRIDES_FILE = DEFAULT_DIR / "auditor_overrides.json"
+
+
+def load_auditor_overrides() -> dict[str, dict]:
+    """Read {contract_id: {my_prob, side, confidence, rationale, top_risk, ts}}.
+
+    Overrides are produced by:
+      - Manual Claude session running auditor subagents (v2)
+      - Future automated auditor pipeline (v2.x)
+
+    Stale overrides (>72h old) are skipped — re-audit before trusting.
+    """
+    if not AUDITOR_OVERRIDES_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(AUDITOR_OVERRIDES_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    overrides = raw.get("overrides", {})
+    if not isinstance(overrides, dict):
+        return {}
+    # Filter stale
+    cutoff = now() - timedelta(hours=72)
+    fresh = {}
+    for cid, ov in overrides.items():
+        try:
+            ts = datetime.fromisoformat((ov.get("ts") or "").replace("Z", "+00:00"))
+            if ts < cutoff:
+                continue
+        except Exception:
+            continue
+        if not isinstance(ov.get("my_prob"), (int, float)):
+            continue
+        if ov.get("side") not in ("YES", "NO", "SKIP"):
+            continue
+        fresh[cid] = ov
+    return fresh
+
+
 # ─── score ──────────────────────────────────────────────────────────────────
 
 
@@ -164,19 +208,45 @@ def score_one(c: dict, my_prob: float | None = None) -> dict:
 
 
 def score_phase(candidates: list[dict], verbose: bool = False) -> list[dict]:
-    """For v1: we have no my_prob source → all scores are 0.
-
-    We still mark candidates as "scored" so the audit loop tracks them.
-    When AUTOEXEC_WOLF_LIVE flips, the auditor subagent (or external scorer)
-    fills in my_prob and the score becomes non-zero.
-
-    For probe phase, we surface the top-volume + lowest-liquidity ones as
-    WATCH candidates — these are the ones a human (or future auditor) should
-    inspect.
-    """
-    scored = [score_one(c) for c in candidates]
+    """Score candidates. Uses auditor_overrides.json for my_prob where available."""
+    overrides = load_auditor_overrides()
+    scored = []
+    n_with_prob = 0
+    for c in candidates:
+        ov = overrides.get(c.get("contract_id"))
+        if ov and ov.get("side") in ("YES", "NO"):
+            # Auditor said BET — score with their my_prob
+            s = score_one(c, my_prob=ov.get("my_prob"))
+            s["auditor"] = {
+                "my_prob": ov.get("my_prob"),
+                "side": ov.get("side"),
+                "confidence": ov.get("confidence", 0.5),
+                "rationale": (ov.get("rationale") or "")[:300],
+                "top_risk": (ov.get("top_risk") or "")[:200],
+            }
+            # Auditor confidence boosts score's `conf` dimension
+            if "composite" in s["score"] and s["score"]["composite"] > 0:
+                s["score"]["conf"] = ov.get("confidence", 0.5)
+                # rescale composite by new conf
+                s["score"]["composite"] = round(
+                    s["score"]["raw_edge"] * s["score"]["kelly"]
+                    * s["score"]["liq_score"] * s["score"]["decay"]
+                    * s["score"]["conf"],
+                    4,
+                )
+            n_with_prob += 1
+        elif ov and ov.get("side") == "SKIP":
+            # Auditor said skip — mark explicitly
+            s = score_one(c)
+            s["score"]["composite"] = 0
+            s["score"]["reason"] = "auditor_skip"
+            s["auditor"] = {"side": "SKIP", "rationale": (ov.get("rationale") or "")[:200]}
+            n_with_prob += 1
+        else:
+            s = score_one(c)
+        scored.append(s)
     if verbose:
-        print(f"[score] {len(scored)} scored, none with my_prob (v1)", file=sys.stderr)
+        print(f"[score] {len(scored)} scored, {n_with_prob} with auditor my_prob", file=sys.stderr)
     return scored
 
 
@@ -184,19 +254,38 @@ def score_phase(candidates: list[dict], verbose: bool = False) -> list[dict]:
 
 
 def decide_phase(scored: list[dict], dry_run: bool, verbose: bool = False) -> list[dict]:
-    """Pick decisions: BET / SKIP / WATCH. In v1 with no my_prob, all are WATCH."""
-    decisions = []
-    # Watchlist: pick top 50 by volume_24h that are not resolved, decent liquidity
-    candidates = [c for c in scored if not c.get("is_resolved")
-                  and (c.get("total_liquidity") or 0) > 100]
-    candidates.sort(key=lambda c: c.get("volume_24h", 0), reverse=True)
-    top = candidates[:50]
+    """Pick decisions: BET / SKIP / WATCH.
 
-    for c in top:
+    Priority order:
+      1. Candidates with auditor my_prob: BET if score >= SCORE_MIN_BET, SKIP if auditor said SKIP
+      2. Other candidates: WATCH if liquidity > 100, otherwise drop
+    """
+    decisions = []
+    # Sort scored: auditor-graded first (by composite desc), then by volume_24h
+    audited = sorted(
+        [c for c in scored if c.get("auditor") is not None],
+        key=lambda c: c.get("score", {}).get("composite", 0),
+        reverse=True,
+    )
+    unaudited = [c for c in scored if c.get("auditor") is None
+                 and not c.get("is_resolved")
+                 and (c.get("total_liquidity") or 0) > 100]
+    unaudited.sort(key=lambda c: c.get("volume_24h", 0), reverse=True)
+
+    # All audited get a decision
+    for c in audited:
         composite = c.get("score", {}).get("composite", 0)
-        if composite >= SCORE_MIN_BET:
+        auditor_skip = c.get("auditor", {}).get("side") == "SKIP"
+        if auditor_skip:
+            decision = "SKIP"
+            size = 0
+        elif composite >= SCORE_MIN_BET:
             decision = "BET"
-            size = min(SINGLE_BET_MAX, max(1, int(composite * 100)))
+            # Kelly-aware size, capped to SINGLE_BET_MAX, floored at M$5 to overcome slippage
+            kelly = c.get("score", {}).get("kelly", 0)
+            conf = c.get("score", {}).get("conf", 0.5)
+            raw_size = BANKROLL_CAP * kelly * conf  # half-Kelly already in kelly itself
+            size = int(max(5, min(SINGLE_BET_MAX, raw_size)))
         else:
             decision = "WATCH"
             size = 0
@@ -213,14 +302,36 @@ def decide_phase(scored: list[dict], dry_run: bool, verbose: bool = False) -> li
             "score": c.get("score", {}),
             "decision": decision,
             "size_mana": size,
-            "outcome": c.get("score", {}).get("side"),
-            "reason": c.get("score", {}).get("reason", "ok"),
+            "outcome": c.get("auditor", {}).get("side") if decision == "BET" else None,
+            "reason": c.get("auditor", {}).get("rationale", "")[:160],
+            "auditor_used": True,
+        })
+
+    # Up to 50 unaudited as WATCH
+    for c in unaudited[:max(0, 50 - len(decisions))]:
+        decisions.append({
+            "candidate": {
+                "contract_id": c["contract_id"],
+                "slug": c["slug"],
+                "question": c.get("question", ""),
+                "url": c["url"],
+                "probability": c.get("probability"),
+                "volume_24h": c.get("volume_24h"),
+                "total_liquidity": c.get("total_liquidity"),
+            },
+            "score": c.get("score", {}),
+            "decision": "WATCH",
+            "size_mana": 0,
+            "outcome": None,
+            "reason": c.get("score", {}).get("reason", "no_my_prob"),
             "auditor_used": False,
         })
+
     if verbose:
         n_bet = sum(1 for d in decisions if d["decision"] == "BET")
+        n_skip = sum(1 for d in decisions if d["decision"] == "SKIP")
         n_watch = sum(1 for d in decisions if d["decision"] == "WATCH")
-        print(f"[decide] {n_bet} BET / {n_watch} WATCH", file=sys.stderr)
+        print(f"[decide] {n_bet} BET / {n_skip} SKIP / {n_watch} WATCH", file=sys.stderr)
     return decisions
 
 
