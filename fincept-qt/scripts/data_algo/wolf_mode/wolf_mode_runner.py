@@ -161,8 +161,10 @@ def _kelly(prob_mine: float, prob_market: float) -> float:
 def score_one(c: dict, my_prob: float | None = None) -> dict:
     """Compute composite score for a binary candidate.
 
-    Without my_prob, we infer "no edge" → score 0.
-    With my_prob, we compute edge × kelly × liquidity × time_decay × confidence.
+    Composite is normalized to roughly [0, 1] where ≥0.30 = bet-worthy:
+        composite = (raw_edge / 0.10) * conf * liq_score * decay
+                    -- kelly affects SIZE, not score
+    Decay is hyperbolic: 1/(1 + days/30) so 30d→0.5, 60d→0.33, 210d→0.125.
     """
     out = dict(c)
     out["score"] = {"composite": 0.0, "reason": "no_my_prob"}
@@ -188,21 +190,24 @@ def score_one(c: dict, my_prob: float | None = None) -> dict:
     if close_ms:
         days_left = (close_ms / 1000 - time.time()) / 86400
     else:
-        days_left = 30
+        days_left = 60  # unknown close = assume 60 days
     if days_left < 0:
         out["score"]["reason"] = "already_closed"
         return out
-    decay = max(0.2, 1.0 - days_left / 30.0)
-    conf = 0.5  # default; higher when sourced from auditor-verified channels
-    composite = raw_edge * k * liq_score * decay * conf
+    decay = 1.0 / (1.0 + days_left / 30.0)  # hyperbolic, never zero
+    conf = 0.5  # default; auditor overrides
+    edge_norm = raw_edge / 0.10  # 10pp edge = 1.0 baseline
+    composite = edge_norm * conf * liq_score * decay
     out["score"] = {
         "composite": round(composite, 4),
         "raw_edge": round(raw_edge, 4),
+        "edge_norm": round(edge_norm, 4),
         "kelly": round(k, 4),
         "liq_score": round(liq_score, 4),
         "decay": round(decay, 4),
         "conf": conf,
         "side": side,
+        "days_left": round(days_left, 1),
     }
     return out
 
@@ -227,11 +232,10 @@ def score_phase(candidates: list[dict], verbose: bool = False) -> list[dict]:
             # Auditor confidence boosts score's `conf` dimension
             if "composite" in s["score"] and s["score"]["composite"] > 0:
                 s["score"]["conf"] = ov.get("confidence", 0.5)
-                # rescale composite by new conf
+                # rescale composite using new conf (matches score_one formula)
                 s["score"]["composite"] = round(
-                    s["score"]["raw_edge"] * s["score"]["kelly"]
-                    * s["score"]["liq_score"] * s["score"]["decay"]
-                    * s["score"]["conf"],
+                    s["score"]["edge_norm"] * s["score"]["conf"]
+                    * s["score"]["liq_score"] * s["score"]["decay"],
                     4,
                 )
             n_with_prob += 1
