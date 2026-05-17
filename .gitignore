@@ -165,3 +165,6 @@ fincept-qt/scripts/data_algo/propfirm_engine/reports/*.csv
 
 # goalv3-cc per-goal state (skill convention)
 .goal/
+
+# ── Wolf mode runtime ───────────────────────────────────────
+fincept-qt/scripts/data_algo/wolf_mode/.state/
